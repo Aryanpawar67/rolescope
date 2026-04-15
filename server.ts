@@ -3,8 +3,6 @@ import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
 import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
 import mammoth from "mammoth";
 import "dotenv/config";
 
@@ -24,6 +22,8 @@ app.post("/api/parse-file", upload.single("file"), async (req, res) => {
     let text = "";
 
     if (mimetype === "application/pdf" || ext === "pdf") {
+      const require = createRequire(import.meta.url);
+      const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
       const result = await pdfParse(buffer);
       text = result.text;
     } else if (
