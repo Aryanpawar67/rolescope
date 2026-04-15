@@ -218,19 +218,66 @@ ${JSON.stringify(tasks, null, 2)}`,
   }
 });
 
-app.post("/api/automate", async (req, res) => {
-  const { task, job_profile, department, industry } = req.body;
-  if (!task?.trim())
-    return res.status(400).json({ error: "task is required." });
+async function runStandardPrompt(task: string) {
+  const message = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `You are an automation strategist who evaluates work tasks and recommends the most practical automation approach using modern tools available today.
 
-  try {
-    const message = await client.messages.create({
-      model: "claude-opus-4-6",
-      max_tokens: 4096,
-      messages: [
-        {
-          role: "user",
-          content: `You are an AI Automation Assessment Engine built for enterprise HR and workforce planning.
+For the task, produce ONE best automation suggestion.
+
+AUTOMATION TYPES — pick the most fitting:
+- "script": A Python/JS/shell script handles this reliably
+- "no-code": Best handled by a no-code tool (Zapier, Make, n8n, Airtable)
+- "ai-agent": Requires reasoning or unstructured input — best as an AI agent
+- "integration": A direct API-to-API integration, no logic layer needed
+- "workflow": Multi-step orchestration combining triggers, conditions, and actions
+
+CONFIDENCE SCORING (0.0 to 1.0) — how automatable is this task:
+- 0.85–1.0 High: Repetitive, rule-based, structured data, clear trigger and output
+- 0.50–0.84 Medium: Partially automatable; requires some human judgment
+- 0.10–0.49 Low: Requires domain knowledge, creativity, or interpersonal skill
+
+Set confidence_label: "High" if ≥0.85, "Medium" if ≥0.50, "Low" otherwise.
+
+EXPLANATION — 1–2 sentences: why this confidence level, and what makes the task more or less automatable.
+
+TOOLS — list 1–3 specific tools or technologies best suited for this automation.
+
+Return ONLY valid JSON:
+{
+  "task": "<echoed input task>",
+  "suggestion_name": "<short memorable name for this automation>",
+  "type": "script|no-code|ai-agent|integration|workflow",
+  "description": "<what this automation does, 1-2 sentences>",
+  "confidence": 0.0-1.0,
+  "confidence_label": "High|Medium|Low",
+  "explanation": "<why this confidence, what makes it automatable or not>",
+  "tools_mentioned": ["Tool1", "Tool2"]
+}
+
+Do not include any text outside the JSON.
+
+Task: ${task}`,
+      },
+    ],
+  });
+  const text = message.content[0].type === "text" ? message.content[0].text : "{}";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  return jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+}
+
+async function runEnterprisePrompt(task: string, job_profile: string, department: string, industry: string) {
+  const message = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 4096,
+    messages: [
+      {
+        role: "user",
+        content: `You are an AI Automation Assessment Engine built for enterprise HR and workforce planning.
 
 Your role is to evaluate how automatable a specific workplace task is using AI and
 automation technologies available today (as of early 2026) — including large language
@@ -352,10 +399,22 @@ Industry: ${industry || "Not specified"}`,
 
     const text = message.content[0].type === "text" ? message.content[0].text : "{}";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    res.json(parsed);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+}
+
+app.post("/api/automate", async (req, res) => {
+  const { task, job_profile, department, industry } = req.body;
+  if (!task?.trim())
+    return res.status(400).json({ error: "task is required." });
+
+  try {
+    const [standard, enterprise] = await Promise.all([
+      runStandardPrompt(task.trim()),
+      runEnterprisePrompt(task.trim(), job_profile || "", department || "", industry || ""),
+    ]);
+    res.json({ standard, enterprise });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to assess automation potential." });
+    res.status(500).json({ error: err.message || "Assessment failed." });
   }
 });
 
