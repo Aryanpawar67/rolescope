@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# RoleScope
 
-TODO: Document your project here
+AI-powered job description analyser and task automation assessor, powered by Claude.
