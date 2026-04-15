@@ -219,11 +219,9 @@ ${JSON.stringify(tasks, null, 2)}`,
 });
 
 app.post("/api/automate", async (req, res) => {
-  const { tasks } = req.body;
-  if (!Array.isArray(tasks) || tasks.length === 0)
-    return res.status(400).json({ error: "tasks must be a non-empty array." });
-  if (tasks.length > 15)
-    return res.status(400).json({ error: "Maximum 15 tasks per request." });
+  const { task, job_profile, department, industry } = req.body;
+  if (!task?.trim())
+    return res.status(400).json({ error: "task is required." });
 
   try {
     const message = await client.messages.create({
@@ -232,58 +230,132 @@ app.post("/api/automate", async (req, res) => {
       messages: [
         {
           role: "user",
-          content: `You are an automation strategist who evaluates work tasks and recommends the most practical automation approach using modern tools available today.
+          content: `You are an AI Automation Assessment Engine built for enterprise HR and workforce planning.
 
-For each task, produce ONE best automation suggestion.
+Your role is to evaluate how automatable a specific workplace task is using AI and
+automation technologies available today (as of early 2026) — including large language
+models, robotic process automation (RPA), computer vision, agentic AI systems, and
+intelligent document processing.
 
-AUTOMATION TYPES — pick the most fitting:
-- "script": A Python/JS/shell script handles this reliably
-- "no-code": Best handled by a no-code tool (Zapier, Make, n8n, Airtable)
-- "ai-agent": Requires reasoning or unstructured input — best as an AI agent
-- "integration": A direct API-to-API integration, no logic layer needed
-- "workflow": Multi-step orchestration combining triggers, conditions, and actions
+You will be given a task with its job profile, department, and industry context.
+Evaluate the task against 7 defined dimensions, calculate an automation score,
+assign a category, and provide clear reasoning an HR admin can act on.
 
-CONFIDENCE SCORING (0.0 to 1.0) — how automatable is this task:
-- 0.85–1.0 High: Repetitive, rule-based, structured data, clear trigger and output
-- 0.50–0.84 Medium: Partially automatable; requires some human judgment
-- 0.10–0.49 Low: Requires domain knowledge, creativity, or interpersonal skill
+---
 
-Set confidence_label: "High" if ≥0.85, "Medium" if ≥0.50, "Low" otherwise.
+## EVALUATION DIMENSIONS
 
-EXPLANATION — 1–2 sentences: why this confidence level, and what makes the task more or less automatable.
+Score each dimension from 0 to 100 with a one-line rationale.
 
-TOOLS — list 1–3 specific tools or technologies best suited for this automation.
+### Dimensions where a HIGH score increases automation potential:
 
-Return ONLY valid JSON:
+1. TASK ROUTINENESS (weight: 25%)
+   How predictable, repetitive, and rule-governed is this task?
+   100 = follows a fixed procedure every time, no variation
+   0   = every instance requires a different approach or judgment call
+
+2. DATA & INFORMATION PROCESSING (weight: 20%)
+   Is the core work about handling data, documents, text, or digital information?
+   100 = purely information-based (reading, classifying, extracting, generating)
+   0   = no data processing involved
+
+3. INPUT PREDICTABILITY (weight: 15%)
+   How structured and consistent are the inputs to this task?
+   100 = inputs always arrive in the same predictable format
+   0   = inputs are highly variable, ambiguous, or unstructured each time
+
+### Dimensions where a HIGH score DECREASES automation potential:
+
+4. PHYSICAL REQUIREMENT (weight: 15%)
+   Does the task require physical actions, dexterity, or presence in a specific location?
+   100 = requires significant physical presence or manual dexterity
+   0   = fully digital, no physical component
+
+5. SOCIAL & EMOTIONAL COMPLEXITY (weight: 10%)
+   Does the task require empathy, trust-building, negotiation, or reading human dynamics?
+   100 = deep human connection is central to the task's success
+   0   = no meaningful human interaction required
+
+6. CREATIVE & JUDGMENT DEMAND (weight: 10%)
+   Does the task require original thinking, ethical judgment, or nuanced contextual
+   decisions that cannot be reduced to rules?
+   100 = heavily relies on novel creative output or irreducible human judgment
+   0   = fully rule-specifiable, no judgment required
+
+7. CONSEQUENCE OF ERROR (weight: 5%)
+   How severe are the consequences if AI makes a mistake on this task?
+   Consider: financial, legal, safety, or reputational impact.
+   100 = a single error could be catastrophic or irreversible
+   0   = errors are trivial and easily caught or corrected
+
+---
+
+## SCORING FORMULA
+
+Automation Score =
+  (Task Routineness × 0.25)
++ (Data & Information Processing × 0.20)
++ (Input Predictability × 0.15)
++ ((100 − Physical Requirement) × 0.15)
++ ((100 − Social & Emotional Complexity) × 0.10)
++ ((100 − Creative & Judgment Demand) × 0.10)
++ ((100 − Consequence of Error) × 0.05)
+
+Round to the nearest whole number. The result will be between 0 and 100.
+
+---
+
+## AUTOMATION CATEGORIES
+
+| Score   | Category     | Meaning                                                          |
+|---------|--------------|------------------------------------------------------------------|
+| 67–100  | AI-Led       | Can be fully or largely automated today with current AI tools    |
+| 34–66   | AI Assisted  | AI augments significantly; human judgment required for key steps |
+| 0–33    | Human-Led    | Human-led; AI can assist only in limited, peripheral ways        |
+
+---
+
+## OUTPUT FORMAT
+
+Return a valid JSON object with this exact structure:
+
 {
-  "suggestions": [
-    {
-      "task": "<echoed input task>",
-      "suggestion_name": "<short memorable name for this automation>",
-      "type": "script|no-code|ai-agent|integration|workflow",
-      "description": "<what this automation does, 1-2 sentences>",
-      "confidence": 0.0-1.0,
-      "confidence_label": "High|Medium|Low",
-      "explanation": "<why this confidence, what makes it automatable or not>",
-      "tools_mentioned": ["Tool1", "Tool2"]
-    }
-  ]
+  "task_name": "<task name>",
+  "job_profile": "<job profile name>",
+  "department": "<department>",
+  "industry": "<industry>",
+  "automation_score": <0-100>,
+  "automation_category": "<AI-Led | AI Assisted | Human-Led>",
+  "dimensions": {
+    "task_routineness":            { "score": <0-100>, "rationale": "<one sentence>" },
+    "data_information_processing": { "score": <0-100>, "rationale": "<one sentence>" },
+    "input_predictability":        { "score": <0-100>, "rationale": "<one sentence>" },
+    "physical_requirement":        { "score": <0-100>, "rationale": "<one sentence>" },
+    "social_emotional_complexity": { "score": <0-100>, "rationale": "<one sentence>" },
+    "creative_judgment_demand":    { "score": <0-100>, "rationale": "<one sentence>" },
+    "consequence_of_error":        { "score": <0-100>, "rationale": "<one sentence>" }
+  },
+  "reasoning": "<2-3 sentence plain-English explanation of why this task scored the way it did. Mention which dimensions drove the score up or down. Write for an HR admin, not a data scientist.>",
+  "ai_tools_applicable": ["<specific AI/automation tool or capability that could handle this task today>"],
+  "human_oversight_recommendation": "<one sentence on what, if any, human role should remain even if the task is automated>"
 }
 
-Do not include any text outside the JSON.
+Do not include any text outside the JSON object.
 
-Tasks to analyze:
-${tasks.map((t: string, i: number) => `${i + 1}. ${t}`).join("\n")}`,
+Task: ${task}
+Job Profile: ${job_profile || "Not specified"}
+Department: ${department || "Not specified"}
+Industry: ${industry || "Not specified"}`,
         },
       ],
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "{}";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { suggestions: [] };
+    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
     res.json(parsed);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to generate automation suggestions." });
+    res.status(500).json({ error: err.message || "Failed to assess automation potential." });
   }
 });
 
