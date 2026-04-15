@@ -287,5 +287,9 @@ ${tasks.map((t: string, i: number) => `${i + 1}. ${t}`).join("\n")}`,
   }
 });
 
-const PORT = process.env.PORT || 7001;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+export default app;
+
+if (process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 7001;
+  app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+}
