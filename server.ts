@@ -55,7 +55,7 @@ app.post("/api/extract", async (req, res) => {
 
   try {
     const message = await client.messages.create({
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
       max_tokens: 4096,
       messages: [
         {
@@ -171,7 +171,7 @@ app.post("/api/evaluate", async (req, res) => {
 
   try {
     const message = await client.messages.create({
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
       max_tokens: 4096,
       messages: [
         {
@@ -220,7 +220,7 @@ ${JSON.stringify(tasks, null, 2)}`,
 
 async function runStandardPrompt(task: string) {
   const message = await client.messages.create({
-    model: "claude-opus-4-6",
+    model: "claude-sonnet-4-6",
     max_tokens: 1024,
     messages: [
       {
@@ -272,7 +272,7 @@ Task: ${task}`,
 
 async function runEnterprisePrompt(task: string, job_profile: string, department: string, industry: string) {
   const message = await client.messages.create({
-    model: "claude-opus-4-6",
+    model: "claude-sonnet-4-6",
     max_tokens: 4096,
     messages: [
       {
