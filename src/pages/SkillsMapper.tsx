@@ -382,15 +382,54 @@ const SkillsMapper = () => {
   const [savedResults, setSavedResults] = useState<AnalysisRecord[]>([]);
   const [activeTab, setActiveTab] = useState("run");
 
-  const loadSaved = useCallback(() => {
-    fetch("/api/stored-results")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data && typeof data === "object") {
-          setSavedResults(Object.values(data) as AnalysisRecord[]);
-        }
-      })
-      .catch(() => {});
+  const LS_KEY = "rolescope_results";
+
+  // Read from localStorage (primary) merged with server results (seed)
+  const loadSaved = useCallback(async () => {
+    // 1. Load from localStorage first (instant)
+    let local: Record<string, AnalysisRecord> = {};
+    try { local = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch {}
+
+    // 2. Merge server results (seeds existing data; no-op on Vercel)
+    try {
+      const res = await fetch("/api/stored-results");
+      const server = await res.json();
+      if (server && typeof server === "object") {
+        const merged = { ...server, ...local }; // local wins on conflict
+        localStorage.setItem(LS_KEY, JSON.stringify(merged));
+        local = merged;
+      }
+    } catch {}
+
+    setSavedResults(Object.values(local).sort(
+      (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
+    ));
+  }, []);
+
+  const saveToLocal = useCallback((record: AnalysisRecord) => {
+    try {
+      const existing: Record<string, AnalysisRecord> =
+        JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      existing[record.profileId] = record;
+      localStorage.setItem(LS_KEY, JSON.stringify(existing));
+      setSavedResults(Object.values(existing).sort(
+        (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
+      ));
+    } catch {}
+  }, []);
+
+  const deleteFromLocal = useCallback((profileId: string) => {
+    try {
+      const existing: Record<string, AnalysisRecord> =
+        JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      delete existing[profileId];
+      localStorage.setItem(LS_KEY, JSON.stringify(existing));
+      setSavedResults(Object.values(existing).sort(
+        (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
+      ));
+    } catch {}
+    // best-effort server delete
+    fetch(`/api/stored-results/${profileId}`, { method: "DELETE" }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -446,8 +485,10 @@ const SkillsMapper = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed.");
       setLiveResult(data);
-      loadSaved();
-      toast.success("Analysis complete — results saved.");
+      saveToLocal(data);
+      toast.success("Analysis complete — auto-saving to results…");
+      // Switch to Saved Results tab after 3 s
+      setTimeout(() => setActiveTab("saved"), 3000);
     } catch (err: any) {
       toast.error(err.message || "Analysis failed.");
     } finally {
@@ -455,9 +496,8 @@ const SkillsMapper = () => {
     }
   };
 
-  const handleDelete = async (profileId: string) => {
-    await fetch(`/api/stored-results/${profileId}`, { method: "DELETE" });
-    loadSaved();
+  const handleDelete = (profileId: string) => {
+    deleteFromLocal(profileId);
     toast.success("Result deleted.");
   };
 
