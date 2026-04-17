@@ -12,7 +12,9 @@ import { buildDiminishingSkillsPrompt } from "./src/prompts/diminishing-skills.j
 import "dotenv/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXCEL_PATH = path.resolve(__dirname, "../Quality_check_english (1).xlsx");
+// Excel file lives in data/ inside the project so it deploys to Vercel
+const EXCEL_PATH = path.resolve(__dirname, "data/job-profiles.xlsx");
+// Results file: writable locally, gracefully skipped on read-only filesystems (Vercel)
 const RESULTS_PATH = path.resolve(__dirname, "../analysis-results.json");
 
 // xlsx is CommonJS-only
@@ -619,7 +621,7 @@ function readResults(): Record<string, any> {
 }
 
 function writeResults(data: Record<string, any>): void {
-  fs.writeFileSync(RESULTS_PATH, JSON.stringify(data, null, 2), "utf-8");
+  try { fs.writeFileSync(RESULTS_PATH, JSON.stringify(data, null, 2), "utf-8"); } catch { /* read-only on Vercel */ }
 }
 
 app.get("/api/stored-results", (_req, res) => {
