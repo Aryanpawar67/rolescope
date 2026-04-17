@@ -4,7 +4,20 @@ import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
 import { createRequire } from "module";
 import mammoth from "mammoth";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
+import { buildSkillsPipelinePrompt } from "./src/prompts/skills-pipeline.js";
+import { buildDiminishingSkillsPrompt } from "./src/prompts/diminishing-skills.js";
 import "dotenv/config";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const EXCEL_PATH = path.resolve(__dirname, "../Quality_check_english (1).xlsx");
+const RESULTS_PATH = path.resolve(__dirname, "../analysis-results.json");
+
+// xlsx is CommonJS-only
+const requireCJS = createRequire(import.meta.url);
+const XLSX = requireCJS("xlsx") as typeof import("xlsx");
 
 const app = express();
 app.use(cors());
@@ -415,6 +428,314 @@ app.post("/api/automate", async (req, res) => {
     res.json({ standard, enterprise });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Assessment failed." });
+  }
+});
+
+// ── Excel Job Profiles ──────────────────────────────────────────────────────
+
+interface JobProfile {
+  id: number;
+  title: string;
+  subFamily: string;
+  family: string;
+  branch: string;
+  level: string;
+  careerLevel: string;
+  purpose: string;
+  tasks: Array<{ name: string; proficiency: string }>;
+  managementTasks: string;
+  groupResponsibility: string;
+  languageSkills: string;
+  education: string;
+  experience: string;
+  professionalKnowledge: string[];
+  managementExperience: string;
+  competencies: Array<{ name: string; description: string }>;
+}
+
+function stripPrefix(val: string | null | undefined, prefix: string): string {
+  if (!val) return "";
+  return val.replace(prefix, "").trim();
+}
+
+function parseTask(raw: string): { name: string; proficiency: string } {
+  const separators = [" - Performs Independently", " - Contributes", " - Leads", " - Manages", " - Hozza"];
+  for (const sep of separators) {
+    const idx = raw.lastIndexOf(sep);
+    if (idx !== -1) {
+      return { name: raw.slice(0, idx).trim(), proficiency: raw.slice(idx + 3).trim() };
+    }
+  }
+  return { name: raw.trim(), proficiency: "" };
+}
+
+function loadJobProfiles(): JobProfile[] {
+  const wb = XLSX.readFile(EXCEL_PATH);
+  const ws = wb.Sheets["Quality Check1"];
+  const data = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, defval: null });
+
+  const getCell = (rowIdx: number, colIdx: number): string => {
+    const row = data[rowIdx];
+    if (!row) return "";
+    const val = row[colIdx];
+    return val ? String(val).trim() : "";
+  };
+
+  const profiles: JobProfile[] = [];
+  const numCols = 16;
+
+  for (let col = 0; col < numCols; col++) {
+    const title = stripPrefix(getCell(2, col), "Job Title: ");
+    if (!title) continue;
+
+    // Tasks: rows 19–30 (0-indexed)
+    const tasks: Array<{ name: string; proficiency: string }> = [];
+    for (let r = 19; r <= 30; r++) {
+      const raw = getCell(r, col);
+      if (raw && raw !== '"No value selected for this section"') {
+        tasks.push(parseTask(raw));
+      }
+    }
+
+    // Professional knowledge: rows 57–62
+    const profKnowledge: string[] = [];
+    for (let r = 57; r <= 62; r++) {
+      const raw = getCell(r, col);
+      if (raw) profKnowledge.push(raw);
+    }
+
+    // Competencies: rows 79–88, alternating name/description
+    const competencies: Array<{ name: string; description: string }> = [];
+    const compRows = [79, 81, 83, 85, 87];
+    for (const nameRow of compRows) {
+      const name = getCell(nameRow, col);
+      const desc = getCell(nameRow + 1, col);
+      if (name) competencies.push({ name, description: desc });
+    }
+
+    const mgmt = getCell(37, col);
+    const mgmtExp = getCell(74, col);
+
+    profiles.push({
+      id: col + 1,
+      title,
+      subFamily: stripPrefix(getCell(3, col), "Job Sub-Family: "),
+      family: stripPrefix(getCell(4, col), "Job Family: "),
+      branch: stripPrefix(getCell(5, col), "Job Branch: "),
+      level: stripPrefix(getCell(6, col), "Job Level: "),
+      careerLevel: stripPrefix(getCell(7, col), "Career Level: "),
+      purpose: getCell(12, col),
+      tasks,
+      managementTasks: mgmt === '"No value selected for this section"' ? "" : mgmt,
+      groupResponsibility: getCell(41, col),
+      languageSkills: getCell(45, col),
+      education: getCell(49, col),
+      experience: getCell(53, col),
+      professionalKnowledge: profKnowledge,
+      managementExperience: mgmtExp === '"No value selected for this section"' ? "" : mgmtExp,
+      competencies,
+    });
+  }
+
+  return profiles;
+}
+
+let cachedProfiles: JobProfile[] | null = null;
+
+function getProfiles(): JobProfile[] {
+  if (!cachedProfiles) cachedProfiles = loadJobProfiles();
+  return cachedProfiles;
+}
+
+app.get("/api/job-profiles", (_req, res) => {
+  try {
+    res.json(getProfiles());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to load job profiles." });
+  }
+});
+
+// ── Skills Pipeline ──────────────────────────────────────────────────────────
+
+function deriveSkillsList(professionalKnowledge: string[]): string {
+  return professionalKnowledge.map((k, i) => `${i + 1}. ${k}`).join("\n") || "Not specified";
+}
+
+function deriveCapabilitiesList(competencies: Array<{ name: string; description: string }>): string {
+  return competencies.map((c) => `- ${c.name}: ${c.description}`).join("\n") || "Not specified";
+}
+
+function deriveSkillCapabilityMapping(
+  professionalKnowledge: string[],
+  competencies: Array<{ name: string; description: string }>
+): string {
+  if (!professionalKnowledge.length || !competencies.length) return "Not specified";
+  return competencies.map((c) => {
+    const related = professionalKnowledge.filter((k) =>
+      k.toLowerCase().split(" ").some((w) => w.length > 4 && c.name.toLowerCase().includes(w))
+    );
+    return `${c.name} ← ${related.length ? related.map((k) => k.slice(0, 60)).join("; ") : "general technical knowledge"}`;
+  }).join("\n");
+}
+
+function deriveTaskSkillMapping(
+  tasks: Array<{ name: string; proficiency: string }>,
+  professionalKnowledge: string[]
+): string {
+  if (!tasks.length) return "Not specified";
+  return tasks.map((t) => {
+    const related = professionalKnowledge.filter((k) =>
+      k.toLowerCase().split(" ").some((w) => w.length > 5 && t.name.toLowerCase().includes(w))
+    );
+    return `${t.name} → ${related.length ? related[0].slice(0, 80) : "general professional knowledge"}`;
+  }).join("\n");
+}
+
+app.post("/api/skills-pipeline", async (req, res) => {
+  const { jdText, tasks } = req.body;
+  if (!jdText?.trim()) return res.status(400).json({ error: "jdText is required." });
+  if (!Array.isArray(tasks) || tasks.length === 0)
+    return res.status(400).json({ error: "tasks array is required." });
+  try {
+    const input = buildPipelineInput(req.body);
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      messages: [{ role: "user", content: buildSkillsPipelinePrompt(input) }],
+    });
+    const raw = message.content[0].type === "text" ? message.content[0].text : "{}";
+    res.json(parseClaudeJson(raw));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Skills pipeline failed." });
+  }
+});
+
+// ── Storage helpers ───────────────────────────────────────────────────────────
+
+function readResults(): Record<string, any> {
+  try {
+    return fs.existsSync(RESULTS_PATH) ? JSON.parse(fs.readFileSync(RESULTS_PATH, "utf-8")) : {};
+  } catch { return {}; }
+}
+
+function writeResults(data: Record<string, any>): void {
+  fs.writeFileSync(RESULTS_PATH, JSON.stringify(data, null, 2), "utf-8");
+}
+
+app.get("/api/stored-results", (_req, res) => {
+  res.json(readResults());
+});
+
+app.delete("/api/stored-results/:profileId", (req, res) => {
+  const all = readResults();
+  delete all[req.params.profileId];
+  writeResults(all);
+  res.json({ ok: true });
+});
+
+// ── Shared input builder ──────────────────────────────────────────────────────
+
+function buildPipelineInput(body: any) {
+  const { jdText, tasks, orgName, industry, jobTitle, department, profile } = body;
+  const profKnowledge: string[] = profile?.professionalKnowledge ?? [];
+  const competencies: Array<{ name: string; description: string }> = profile?.competencies ?? [];
+  const profileTasks: Array<{ name: string; proficiency: string }> = profile?.tasks ?? [];
+  const resolvedTasks = profileTasks.length
+    ? profileTasks
+    : (tasks as string[]).map((t) => ({ name: t, proficiency: "" }));
+  return {
+    orgName: orgName?.trim() || "",
+    industry: industry?.trim() || "",
+    jobTitle: jobTitle?.trim() || profile?.title || "",
+    department: department?.trim() || profile?.subFamily || "",
+    jdText: jdText.trim(),
+    skillsList: deriveSkillsList(profKnowledge),
+    capabilitiesList: deriveCapabilitiesList(competencies),
+    skillCapabilityMapping: deriveSkillCapabilityMapping(profKnowledge, competencies),
+    tasksList: resolvedTasks.map((t, i) => `${i + 1}. ${t.name}`).join("\n"),
+    taskSkillMapping: deriveTaskSkillMapping(resolvedTasks, profKnowledge),
+  };
+}
+
+function parseClaudeJson(raw: string): any {
+  const stripped = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
+  const match = stripped.match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : {};
+}
+
+// ── Diminishing Skills Pipeline ───────────────────────────────────────────────
+
+app.post("/api/diminishing-skills", async (req, res) => {
+  const { jdText, tasks } = req.body;
+  if (!jdText?.trim()) return res.status(400).json({ error: "jdText is required." });
+  if (!Array.isArray(tasks) || tasks.length === 0)
+    return res.status(400).json({ error: "tasks array is required." });
+
+  try {
+    const input = buildPipelineInput(req.body);
+    const prompt = buildDiminishingSkillsPrompt(input);
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const raw = message.content[0].type === "text" ? message.content[0].text : "{}";
+    res.json(parseClaudeJson(raw));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Diminishing skills pipeline failed." });
+  }
+});
+
+// ── Full Analysis (both pipelines in parallel + auto-save) ────────────────────
+
+app.post("/api/full-analysis", async (req, res) => {
+  const { jdText, tasks, profile } = req.body;
+  if (!jdText?.trim()) return res.status(400).json({ error: "jdText is required." });
+  if (!Array.isArray(tasks) || tasks.length === 0)
+    return res.status(400).json({ error: "tasks array is required." });
+
+  try {
+    const input = buildPipelineInput(req.body);
+
+    const [emergingRaw, diminishingRaw] = await Promise.all([
+      client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8192,
+        messages: [{ role: "user", content: buildSkillsPipelinePrompt(input) }],
+      }),
+      client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8192,
+        messages: [{ role: "user", content: buildDiminishingSkillsPrompt(input) }],
+      }),
+    ]);
+
+    const emerging = parseClaudeJson(
+      emergingRaw.content[0].type === "text" ? emergingRaw.content[0].text : "{}"
+    );
+    const diminishing = parseClaudeJson(
+      diminishingRaw.content[0].type === "text" ? diminishingRaw.content[0].text : "{}"
+    );
+
+    const profileId = `profile_${profile?.id ?? Date.now()}`;
+    const record = {
+      profileId,
+      profile: profile ?? null,
+      orgName: input.orgName,
+      industry: input.industry,
+      department: input.department,
+      analyzedAt: new Date().toISOString(),
+      emerging,
+      diminishing,
+    };
+
+    const all = readResults();
+    all[profileId] = record;
+    writeResults(all);
+
+    res.json(record);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Full analysis failed." });
   }
 });
 

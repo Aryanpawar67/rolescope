@@ -1,5 +1,5 @@
 import { Outlet } from "react-router-dom";
-import { FileText, Zap } from "lucide-react";
+import { FileText, Zap, Users, BrainCircuit } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 
 const AppLayout = () => (
@@ -28,6 +28,28 @@ const AppLayout = () => (
         >
           <Zap className="h-4 w-4 shrink-0" />
           Task Automator
+        </NavLink>
+
+        <div className="pt-3 pb-1 px-3">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Skills Pipeline</p>
+        </div>
+
+        <NavLink
+          to="/profiles"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          activeClassName="bg-accent text-accent-foreground font-medium"
+        >
+          <Users className="h-4 w-4 shrink-0" />
+          Job Profiles
+        </NavLink>
+
+        <NavLink
+          to="/skills"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          activeClassName="bg-accent text-accent-foreground font-medium"
+        >
+          <BrainCircuit className="h-4 w-4 shrink-0" />
+          Skills Mapper
         </NavLink>
       </nav>
     </aside>
