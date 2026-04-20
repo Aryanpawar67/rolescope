@@ -9,7 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Info, Trash2, Clock, BookMarked } from "lucide-react";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Info, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -118,60 +123,38 @@ function profileToTasks(p: JobProfile): string[] {
   return p.tasks.map((t) => (t.proficiency ? `${t.name} - ${t.proficiency}` : t.name));
 }
 
-// ── Emerging skill card ───────────────────────────────────────────────────────
+// ── Compact skill row (name + category only) ──────────────────────────────────
 
-function EmergingSkillCard({ skill, rank }: { skill: EmergingSkill; rank: number }) {
+function EmergingSkillRow({ skill, rank }: { skill: EmergingSkill; rank: number }) {
   return (
-    <div className="p-3 rounded-lg border border-border space-y-2">
-      <div className="flex items-start justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-bold text-muted-foreground w-5 shrink-0">#{rank}</span>
-          <p className="text-xs font-semibold text-foreground">{skill.skill_name}</p>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-green-50 cursor-default transition-colors">
+          <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
+          <span className="text-[11px] font-medium text-foreground flex-1">{skill.skill_name}</span>
           {skill.category && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${categoryBadge(skill.category)}`}>
+            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1 flex-wrap shrink-0">
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>
-            {skill.confidence}
-          </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${horizonStyle(skill.time_horizon)}`}>
-            {skill.time_horizon}
-          </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium cursor-default flex items-center gap-0.5 ${gapStyle(skill.profile_gap)}`}>
-                {skill.profile_gap}<Info className="h-2 w-2" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-[200px] text-xs">
-              {gapTooltip[skill.profile_gap] ?? ""}
-            </TooltipContent>
-          </Tooltip>
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-[280px] space-y-1.5 p-3">
+        <p className="text-xs font-semibold">{skill.skill_name}</p>
+        <div className="flex flex-wrap gap-1">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${horizonStyle(skill.time_horizon)}`}>{skill.time_horizon}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${gapStyle(skill.profile_gap)}`}>{skill.profile_gap}</span>
         </div>
-      </div>
-      {skill.demand_signal && (
-        <div className="flex items-start gap-1.5 text-[11px] pl-7">
-          <TrendingUp className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
-          <span className="text-muted-foreground">{skill.demand_signal}</span>
-        </div>
-      )}
-      <p className="text-[11px] text-foreground leading-relaxed pl-7">{skill.reasoning}</p>
-      {skill.co_emerging_skills?.length > 0 && (
-        <div className="pl-7 flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] text-muted-foreground shrink-0">Also watch:</span>
-          {skill.co_emerging_skills.map((s, i) => (
-            <Badge key={i} variant="outline" className="text-[10px] px-1.5 py-0 bg-muted/40">{s}</Badge>
-          ))}
-        </div>
-      )}
-    </div>
+        {skill.demand_signal && <p className="text-[10px] text-muted-foreground">{skill.demand_signal}</p>}
+        <p className="text-[10px] leading-relaxed">{skill.reasoning}</p>
+        {skill.co_emerging_skills?.length > 0 && (
+          <p className="text-[9px] text-muted-foreground">Also watch: {skill.co_emerging_skills.join(", ")}</p>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
-
-// ── Diminishing skill card ────────────────────────────────────────────────────
 
 const declineReasonLabel: Record<string, string> = {
   ai_automation: "AI Automation",
@@ -196,88 +179,58 @@ const relationshipStyle = (r?: string) => {
   return "bg-muted text-muted-foreground";
 };
 
-function DiminishingSkillCard({ skill, rank }: { skill: DiminishingSkill; rank: number }) {
+function DiminishingSkillRow({ skill, rank }: { skill: DiminishingSkill; rank: number }) {
   return (
-    <div className="p-3 rounded-lg border border-border space-y-2">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-bold text-muted-foreground w-5 shrink-0">#{rank}</span>
-          <p className="text-xs font-semibold text-foreground">{skill.skill_name}</p>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-red-50 cursor-default transition-colors">
+          <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
+          <span className="text-[11px] font-medium text-foreground flex-1">{skill.skill_name}</span>
           {skill.category && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${categoryBadge(skill.category)}`}>
+            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1 flex-wrap shrink-0">
-          {skill.confidence && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>
-              {skill.confidence}
-            </span>
-          )}
-          {skill.decline_horizon && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${declineHorizonStyle(skill.decline_horizon)}`}>
-              {skill.decline_horizon}
-            </span>
-          )}
+      </TooltipTrigger>
+      <TooltipContent side="left" className="max-w-[280px] space-y-1.5 p-3">
+        <p className="text-xs font-semibold">{skill.skill_name}</p>
+        <div className="flex flex-wrap gap-1">
+          {skill.confidence && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>}
+          {skill.decline_horizon && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${declineHorizonStyle(skill.decline_horizon)}`}>{skill.decline_horizon}</span>}
           {skill.still_required_today !== undefined && (
             <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${skill.still_required_today ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
               {skill.still_required_today ? "still needed" : "phase out now"}
             </span>
           )}
         </div>
-      </div>
-
-      {/* Decline reason */}
-      {skill.decline_reason && (
-        <div className="flex items-start gap-1.5 text-[11px] pl-7">
-          <TrendingDown className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
-          <span className="text-muted-foreground">
-            {declineReasonLabel[skill.decline_reason] ?? skill.decline_reason}
-          </span>
-        </div>
-      )}
-
-      {/* Reasoning */}
-      <p className="text-[11px] text-foreground leading-relaxed pl-7">{skill.reasoning}</p>
-
-      {/* Replacement */}
-      {skill.replacement && (
-        <div className="pl-7 space-y-1">
-          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-            <span className="text-muted-foreground shrink-0">Replaced by:</span>
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-800 border-amber-200 font-medium">
-              {skill.replacement.skill_name}
-            </Badge>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${relationshipStyle(skill.replacement.relationship)}`}>
-              {skill.replacement.relationship?.replace(/_/g, " ")}
-            </span>
+        {skill.decline_reason && <p className="text-[10px] text-muted-foreground">{declineReasonLabel[skill.decline_reason] ?? skill.decline_reason}</p>}
+        <p className="text-[10px] leading-relaxed">{skill.reasoning}</p>
+        {skill.replacement && (
+          <div className="space-y-0.5">
+            <p className="text-[9px] text-muted-foreground">Replaced by: <span className="font-medium text-amber-700">{skill.replacement.skill_name}</span></p>
+            {skill.replacement.transition_note && <p className="text-[9px] text-muted-foreground italic">{skill.replacement.transition_note}</p>}
           </div>
-          {skill.replacement.transition_note && (
-            <p className="text-[10px] text-muted-foreground italic">{skill.replacement.transition_note}</p>
-          )}
-        </div>
-      )}
-
-      {!skill.replacement && (skill as any).replacement_skill && (
-        <div className="pl-7 flex items-center gap-1.5 text-[11px]">
-          <span className="text-muted-foreground shrink-0">Replaced by:</span>
-          <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-800 border-amber-200">
-            {(skill as any).replacement_skill}
-          </Badge>
-        </div>
-      )}
-    </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
 // ── Full analysis result card (used in both live + saved views) ───────────────
 
-function AnalysisCard({ record, onDelete }: { record: AnalysisRecord; onDelete?: () => void }) {
+function AnalysisCard({
+  record,
+  onDelete,
+  onAddToReport,
+  addingToReport,
+}: {
+  record: AnalysisRecord;
+  onDelete?: () => void;
+  onAddToReport?: () => void;
+  addingToReport?: boolean;
+}) {
   const emerging = record.emerging?.emerging_skills ?? [];
-
-  // Diminishing skills: try common key names
   const diminishing: DiminishingSkill[] = (
     record.diminishing?.diminishing_skills ??
     record.diminishing?.skills ??
@@ -306,15 +259,31 @@ function AnalysisCard({ record, onDelete }: { record: AnalysisRecord; onDelete?:
               )}
             </div>
           </div>
-          {onDelete && (
-            <button
-              onClick={onDelete}
-              className="p-1.5 rounded text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
-              title="Delete this result"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onAddToReport && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px] gap-1.5 border-green-300 text-green-700 hover:bg-green-50"
+                onClick={onAddToReport}
+                disabled={addingToReport}
+              >
+                {addingToReport
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <Plus className="h-3 w-3" />}
+                Add to Report
+              </Button>
+            )}
+            {onDelete && (
+              <button
+                onClick={onDelete}
+                className="p-1.5 rounded text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
+                title="Delete this result"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2 pt-1">
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-medium">
@@ -323,39 +292,34 @@ function AnalysisCard({ record, onDelete }: { record: AnalysisRecord; onDelete?:
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-medium">
             {diminishing.length} diminishing
           </span>
+          <span className="text-[10px] text-muted-foreground ml-1">hover a skill for details</span>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent>
         <div className="grid grid-cols-2 gap-4">
           {/* Emerging */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 mb-2">
               <TrendingUp className="h-3.5 w-3.5 text-green-600" />
               <p className="text-xs font-semibold text-foreground">Emerging Skills</p>
             </div>
-            {emerging.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground italic">No data — paste your emerging skills prompt.</p>
-            ) : (
-              <div className="space-y-2">
-                {emerging.map((s, i) => <EmergingSkillCard key={i} skill={s} rank={i + 1} />)}
-              </div>
-            )}
+            {emerging.length === 0
+              ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
+              : emerging.map((s, i) => <EmergingSkillRow key={i} skill={s} rank={i + 1} />)
+            }
           </div>
 
           {/* Diminishing */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 mb-2">
               <TrendingDown className="h-3.5 w-3.5 text-red-500" />
               <p className="text-xs font-semibold text-foreground">Diminishing Skills</p>
             </div>
-            {diminishing.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground italic">No data — paste your diminishing skills prompt.</p>
-            ) : (
-              <div className="space-y-2">
-                {diminishing.map((s, i) => <DiminishingSkillCard key={i} skill={s} rank={i + 1} />)}
-              </div>
-            )}
+            {diminishing.length === 0
+              ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
+              : diminishing.map((s, i) => <DiminishingSkillRow key={i} skill={s} rank={i + 1} />)
+            }
           </div>
         </div>
       </CardContent>
@@ -381,6 +345,9 @@ const SkillsMapper = () => {
   const [liveResult, setLiveResult] = useState<AnalysisRecord | null>(null);
   const [savedResults, setSavedResults] = useState<AnalysisRecord[]>([]);
   const [activeTab, setActiveTab] = useState("run");
+  const [confirmRecord, setConfirmRecord] = useState<AnalysisRecord | null>(null);
+  const [addingToReport, setAddingToReport] = useState<string | null>(null);
+  const [sheetExists, setSheetExists] = useState(false);
 
   const LS_KEY = "rolescope_results";
 
@@ -438,7 +405,31 @@ const SkillsMapper = () => {
       .then((data) => { if (Array.isArray(data)) setProfiles(data); })
       .catch(() => {});
     loadSaved();
+    fetch("/api/sheet-status").then(r => r.json()).then(d => setSheetExists(d.exists)).catch(() => {});
   }, []);
+
+  const handleAddToReport = async (record: AnalysisRecord) => {
+    setAddingToReport(record.profileId);
+    try {
+      const res = await fetch("/api/export-to-sheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ record }),
+      });
+      if (!res.ok) throw new Error("Export failed.");
+      setSheetExists(true);
+      toast.success("Added to skills-analysis-report.xlsx");
+    } catch (err: any) {
+      toast.error(err.message || "Export failed.");
+    } finally {
+      setAddingToReport(null);
+      setConfirmRecord(null);
+    }
+  };
+
+  const handleDownloadSheet = () => {
+    window.open("/api/download-sheet", "_blank");
+  };
 
   useEffect(() => {
     if (incomingProfile) {
@@ -504,6 +495,36 @@ const SkillsMapper = () => {
   const tasks = tasksText.split("\n").map((t) => t.trim()).filter(Boolean);
 
   return (
+    <>
+    <AlertDialog open={!!confirmRecord} onOpenChange={(o) => { if (!o) setConfirmRecord(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex items-center gap-2">
+            <FileSpreadsheet className="h-5 w-5 text-green-600" />
+            Add to Report
+          </AlertDialogTitle>
+          <AlertDialogDescription className="space-y-1">
+            <span className="block font-medium text-foreground">
+              {confirmRecord?.profile?.title ?? confirmRecord?.emerging?.job_title ?? "This analysis"}
+            </span>
+            <span className="block text-sm">
+              Will be appended to <code className="text-xs bg-muted px-1 rounded">skills-analysis-report.xlsx</code> with{" "}
+              {(confirmRecord?.emerging?.emerging_skills ?? []).length} emerging and{" "}
+              {(confirmRecord?.diminishing?.diminishing_skills ?? confirmRecord?.diminishing?.skills ?? []).length} diminishing skills.
+            </span>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-green-600 hover:bg-green-700"
+            onClick={() => confirmRecord && handleAddToReport(confirmRecord)}
+          >
+            Add to Report
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     <div className="flex flex-col items-center px-6 py-10">
       <div className="w-full max-w-5xl space-y-6">
         <div className="space-y-1">
@@ -605,7 +626,13 @@ const SkillsMapper = () => {
               </CardContent>
             </Card>
 
-            {liveResult && <AnalysisCard record={liveResult} />}
+            {liveResult && (
+              <AnalysisCard
+                record={liveResult}
+                onAddToReport={() => setConfirmRecord(liveResult)}
+                addingToReport={addingToReport === liveResult.profileId}
+              />
+            )}
           </TabsContent>
 
           {/* ── Saved Results tab ── */}
@@ -622,6 +649,12 @@ const SkillsMapper = () => {
                   <p className="text-sm text-muted-foreground">
                     {savedResults.length} profile{savedResults.length !== 1 ? "s" : ""} analysed
                   </p>
+                  {sheetExists && (
+                    <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={handleDownloadSheet}>
+                      <Download className="h-3.5 w-3.5" />
+                      Download Report
+                    </Button>
+                  )}
                 </div>
                 <div className="space-y-4">
                   {[...savedResults]
@@ -631,6 +664,8 @@ const SkillsMapper = () => {
                         key={r.profileId}
                         record={r}
                         onDelete={() => handleDelete(r.profileId)}
+                        onAddToReport={() => setConfirmRecord(r)}
+                        addingToReport={addingToReport === r.profileId}
                       />
                     ))}
                 </div>
@@ -640,6 +675,7 @@ const SkillsMapper = () => {
         </Tabs>
       </div>
     </div>
+    </>
   );
 };
 

@@ -748,6 +748,190 @@ app.post("/api/full-analysis", async (req, res) => {
   }
 });
 
+// ── Skills Report (XLSX export) ───────────────────────────────────────────────
+
+import ExcelJS from "exceljs";
+
+const REPORT_PATH = path.resolve(__dirname, "data/skills-analysis-report.xlsx");
+
+const HEADER_FILL: ExcelJS.Fill = {
+  type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3864" },
+};
+const EMERGING_FILL: ExcelJS.Fill = {
+  type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F5E9" },
+};
+const DIMINISHING_FILL: ExcelJS.Fill = {
+  type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4EC" },
+};
+const META_FILL: ExcelJS.Fill = {
+  type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" },
+};
+const SEPARATOR_FILL: ExcelJS.Fill = {
+  type: "pattern", pattern: "solid", fgColor: { argb: "FFBDBDBD" },
+};
+
+function applyBorder(cell: ExcelJS.Cell, style: ExcelJS.BorderStyle = "thin") {
+  const b = { style, color: { argb: "FFBDBDBD" } };
+  cell.border = { top: b, left: b, bottom: b, right: b };
+}
+
+function applyThickBorder(cell: ExcelJS.Cell) {
+  const thick = { style: "medium" as ExcelJS.BorderStyle, color: { argb: "FF1F3864" } };
+  cell.border = { top: thick, left: thick, bottom: thick, right: thick };
+}
+
+async function appendRecordToReport(record: any): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  const sheetName = "Skills Analysis";
+
+  // Load existing or create fresh
+  let ws: ExcelJS.Worksheet;
+  if (fs.existsSync(REPORT_PATH)) {
+    await wb.xlsx.readFile(REPORT_PATH);
+    ws = wb.getWorksheet(sheetName) ?? wb.addWorksheet(sheetName);
+  } else {
+    ws = wb.addWorksheet(sheetName);
+  }
+
+  // ── Column widths (set once, idempotent) ─────────────────────────────────
+  if (ws.rowCount === 0) {
+    ws.columns = [
+      { key: "sno",        width: 5  },
+      { key: "role",       width: 32 },
+      { key: "jd",         width: 48 },
+      { key: "emerging",   width: 42 },
+      { key: "diminishing",width: 42 },
+      { key: "date",       width: 14 },
+    ];
+  }
+
+  // ── Header row (only if sheet is brand new) ───────────────────────────────
+  const isNew = ws.rowCount === 0;
+  if (isNew) {
+    // Title row
+    const titleRow = ws.addRow(["Skills Analysis Report", "", "", "", "", ""]);
+    ws.mergeCells(`A${titleRow.number}:F${titleRow.number}`);
+    const titleCell = titleRow.getCell(1);
+    titleCell.value = "Skills Analysis Report";
+    titleCell.font  = { name: "Calibri", bold: true, size: 16, color: { argb: "FFFFFFFF" } };
+    titleCell.fill  = HEADER_FILL;
+    titleCell.alignment = { horizontal: "center", vertical: "middle" };
+    titleRow.height = 32;
+
+    // Column header row
+    const headers = ["#", "Role / Job Title", "Job Description", "Emerging Skills ▲", "Diminishing Skills ▼", "Analysis Date"];
+    const hRow = ws.addRow(headers);
+    hRow.height = 22;
+    hRow.eachCell((cell) => {
+      cell.font  = { name: "Calibri", bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+      cell.fill  = HEADER_FILL;
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      applyThickBorder(cell);
+    });
+  }
+
+  // ── Data ──────────────────────────────────────────────────────────────────
+  const emerging: string[]   = (record.emerging?.emerging_skills  ?? []).map((s: any) => s.skill_name);
+  const diminishing: string[] = (
+    record.diminishing?.diminishing_skills ??
+    record.diminishing?.skills ??
+    []
+  ).map((s: any) => s.skill_name);
+
+  const rowCount = Math.max(emerging.length, diminishing.length, 1);
+  const role     = record.profile?.title ?? record.emerging?.job_title ?? "—";
+  const jd       = record.profile?.purpose ?? record.emerging?.jd ?? "";
+  const dateStr  = record.analyzedAt
+    ? new Date(record.analyzedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    : "";
+
+  // S.No = count of unique roles already in sheet (approximate)
+  const existingSno = Math.max(0, ...ws.getColumn(1).values
+    .filter((v): v is number => typeof v === "number"));
+  const sno = existingSno + 1;
+
+  const startRow = ws.rowCount + 1;
+
+  for (let i = 0; i < rowCount; i++) {
+    const r = ws.addRow([
+      i === 0 ? sno  : "",
+      i === 0 ? role : "",
+      i === 0 ? jd   : "",
+      emerging[i]   ?? "",
+      diminishing[i] ?? "",
+      i === 0 ? dateStr : "",
+    ]);
+    r.height = 18;
+
+    // Cells 1–3 and 6: meta style
+    [1, 2, 3, 6].forEach((col) => {
+      const c = r.getCell(col);
+      c.fill = META_FILL;
+      c.font = { name: "Calibri", size: 10 };
+      c.alignment = { vertical: "top", wrapText: true };
+      applyBorder(c);
+    });
+
+    // Cell 4: emerging
+    const ec = r.getCell(4);
+    ec.fill = EMERGING_FILL;
+    ec.font = { name: "Calibri", size: 10, color: { argb: "FF1B5E20" } };
+    ec.alignment = { vertical: "middle", wrapText: true };
+    applyBorder(ec);
+
+    // Cell 5: diminishing
+    const dc = r.getCell(5);
+    dc.fill = DIMINISHING_FILL;
+    dc.font = { name: "Calibri", size: 10, color: { argb: "FFB71C1C" } };
+    dc.alignment = { vertical: "middle", wrapText: true };
+    applyBorder(dc);
+  }
+
+  // Merge meta columns vertically
+  const endRow = startRow + rowCount - 1;
+  if (rowCount > 1) {
+    [1, 2, 3, 6].forEach((col) => {
+      const colLetter = ["A","B","C","D","E","F"][col - 1];
+      ws.mergeCells(`${colLetter}${startRow}:${colLetter}${endRow}`);
+      const mergedCell = ws.getCell(`${colLetter}${startRow}`);
+      mergedCell.alignment = { vertical: "middle", wrapText: true };
+    });
+  }
+
+  // Separator row
+  const sepRow = ws.addRow(["", "", "", "", "", ""]);
+  sepRow.height = 6;
+  sepRow.eachCell((cell) => { cell.fill = SEPARATOR_FILL; });
+
+  await wb.xlsx.writeFile(REPORT_PATH);
+}
+
+// POST /api/export-to-sheet
+app.post("/api/export-to-sheet", async (req, res) => {
+  const { record } = req.body;
+  if (!record) return res.status(400).json({ error: "record is required." });
+  try {
+    await appendRecordToReport(record);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("[export-to-sheet]", err);
+    res.status(500).json({ error: err.message || "Export failed." });
+  }
+});
+
+// GET /api/download-sheet
+app.get("/api/download-sheet", (_req, res) => {
+  if (!fs.existsSync(REPORT_PATH)) {
+    return res.status(404).json({ error: "No report generated yet." });
+  }
+  res.download(REPORT_PATH, "skills-analysis-report.xlsx");
+});
+
+// GET /api/sheet-status
+app.get("/api/sheet-status", (_req, res) => {
+  res.json({ exists: fs.existsSync(REPORT_PATH) });
+});
+
 export default app;
 
 if (process.env.NODE_ENV !== "production") {
