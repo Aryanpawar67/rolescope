@@ -662,7 +662,14 @@ function buildPipelineInput(body: any) {
 function parseClaudeJson(raw: string): any {
   const stripped = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
   const match = stripped.match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : {};
+  if (!match) return {};
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    // Truncated JSON — attempt to extract partial skills array before bailing
+    console.error("[parseClaudeJson] JSON.parse failed, raw length:", match[0].length);
+    return {};
+  }
 }
 
 // ── Diminishing Skills Pipeline ───────────────────────────────────────────────

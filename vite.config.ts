@@ -10,7 +10,12 @@ export default defineConfig(({ mode: _mode }) => ({
       overlay: false,
     },
     proxy: {
-      "/api": "http://localhost:7001",
+      "/api": {
+        target: "http://localhost:7001",
+        changeOrigin: true,
+        timeout: 180000,       // 3 min socket timeout
+        proxyTimeout: 180000,  // 3 min proxy timeout
+      },
     },
   },
   plugins: [react()],
