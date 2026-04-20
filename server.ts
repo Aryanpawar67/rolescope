@@ -802,7 +802,27 @@ Return ONLY valid JSON:
 
 import ExcelJS from "exceljs";
 
-const REPORT_PATH = path.resolve(__dirname, "data/skills-analysis-report.xlsx");
+const REPORT_PATH      = path.resolve(__dirname, "data/skills-analysis-report.xlsx");
+const SHEET_DATA_PATH  = path.resolve(__dirname, "data/sheet-data.json");
+
+interface SheetRow {
+  sno: number;
+  role: string;
+  jd: string;
+  date: string;
+  emerging: string[];
+  diminishing: string[];
+}
+
+function readSheetData(): SheetRow[] {
+  try {
+    return fs.existsSync(SHEET_DATA_PATH) ? JSON.parse(fs.readFileSync(SHEET_DATA_PATH, "utf-8")) : [];
+  } catch { return []; }
+}
+
+function writeSheetData(rows: SheetRow[]): void {
+  try { fs.writeFileSync(SHEET_DATA_PATH, JSON.stringify(rows, null, 2), "utf-8"); } catch {}
+}
 
 const HEADER_FILL: ExcelJS.Fill = {
   type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3864" },
@@ -954,7 +974,17 @@ async function appendRecordToReport(record: any): Promise<void> {
   sepRow.eachCell((cell) => { cell.fill = SEPARATOR_FILL; });
 
   await wb.xlsx.writeFile(REPORT_PATH);
+
+  // ── JSON sidecar for live preview ────────────────────────────────────────
+  const existingRows = readSheetData();
+  existingRows.push({ sno, role, jd, date: dateStr, emerging, diminishing });
+  writeSheetData(existingRows);
 }
+
+// GET /api/sheet-data — live preview data
+app.get("/api/sheet-data", (_req, res) => {
+  res.json(readSheetData());
+});
 
 // POST /api/export-to-sheet
 app.post("/api/export-to-sheet", async (req, res) => {

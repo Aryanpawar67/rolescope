@@ -482,6 +482,11 @@ const SkillsMapper = () => {
   const [confirmRecord, setConfirmRecord] = useState<AnalysisRecord | null>(null);
   const [addingToReport, setAddingToReport] = useState<string | null>(null);
   const [sheetExists, setSheetExists] = useState(false);
+  const [sheetRows, setSheetRows] = useState<any[]>([]);
+
+  const loadSheetData = useCallback(() => {
+    fetch("/api/sheet-data").then(r => r.json()).then(d => { if (Array.isArray(d)) setSheetRows(d); }).catch(() => {});
+  }, []);
 
   const LS_KEY = "rolescope_results";
 
@@ -540,6 +545,7 @@ const SkillsMapper = () => {
       .catch(() => {});
     loadSaved();
     fetch("/api/sheet-status").then(r => r.json()).then(d => setSheetExists(d.exists)).catch(() => {});
+    loadSheetData();
   }, []);
 
   const handleAddToReport = async (record: AnalysisRecord) => {
@@ -552,7 +558,9 @@ const SkillsMapper = () => {
       });
       if (!res.ok) throw new Error("Export failed.");
       setSheetExists(true);
-      toast.success("Added to skills-analysis-report.xlsx");
+      loadSheetData();
+      setActiveTab("report");
+      toast.success("Added to report — preview updated.");
     } catch (err: any) {
       toast.error(err.message || "Export failed.");
     } finally {
@@ -669,7 +677,7 @@ const SkillsMapper = () => {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="run">
               <BrainCircuit className="mr-2 h-4 w-4" />Run Analysis
             </TabsTrigger>
@@ -679,6 +687,15 @@ const SkillsMapper = () => {
               {savedResults.length > 0 && (
                 <span className="ml-1.5 text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-medium">
                   {savedResults.length}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="report">
+              <FileSpreadsheet className="mr-2 h-4 w-4" />
+              Report
+              {sheetRows.length > 0 && (
+                <span className="ml-1.5 text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded-full font-medium">
+                  {sheetRows.length}
                 </span>
               )}
             </TabsTrigger>
@@ -805,6 +822,74 @@ const SkillsMapper = () => {
                 </div>
               </>
             )}
+          </TabsContent>
+          {/* ── Report Preview tab ── */}
+          <TabsContent value="report" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <FileSpreadsheet className="h-4 w-4 text-green-600" />
+                      Skills Analysis Report
+                    </CardTitle>
+                    <CardDescription className="text-xs mt-0.5">
+                      Saved to <code className="bg-muted px-1 rounded">data/skills-analysis-report.xlsx</code> · {sheetRows.length} role{sheetRows.length !== 1 ? "s" : ""} added
+                    </CardDescription>
+                  </div>
+                  {sheetExists && (
+                    <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={handleDownloadSheet}>
+                      <Download className="h-3.5 w-3.5" />Download XLSX
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                {sheetRows.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-muted-foreground">
+                    No entries yet — click <strong>Add to Report</strong> on any result.
+                  </div>
+                ) : (
+                  <div className="overflow-auto">
+                    <table className="w-full text-[11px] border-collapse">
+                      <thead>
+                        <tr className="bg-[#1F3864] text-white">
+                          <th className="px-3 py-2 text-left font-semibold w-8">#</th>
+                          <th className="px-3 py-2 text-left font-semibold w-40">Role</th>
+                          <th className="px-3 py-2 text-left font-semibold text-green-300">Emerging Skills ▲</th>
+                          <th className="px-3 py-2 text-left font-semibold text-red-300">Diminishing Skills ▼</th>
+                          <th className="px-3 py-2 text-left font-semibold w-24">Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sheetRows.map((row, ri) => {
+                          const maxLen = Math.max(row.emerging?.length ?? 0, row.diminishing?.length ?? 0, 1);
+                          return Array.from({ length: maxLen }).map((_, si) => (
+                            <tr key={`${ri}-${si}`} className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                              {si === 0 && (
+                                <>
+                                  <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 text-muted-foreground align-middle text-center font-medium">{row.sno}</td>
+                                  <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 font-medium align-middle">{row.role}</td>
+                                </>
+                              )}
+                              <td className="px-3 py-1.5 border border-gray-200 text-green-800 bg-green-50">
+                                {row.emerging?.[si] ?? ""}
+                              </td>
+                              <td className="px-3 py-1.5 border border-gray-200 text-red-800 bg-red-50">
+                                {row.diminishing?.[si] ?? ""}
+                              </td>
+                              {si === 0 && (
+                                <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 text-muted-foreground align-middle whitespace-nowrap">{row.date}</td>
+                              )}
+                            </tr>
+                          ));
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>
