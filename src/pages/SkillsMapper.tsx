@@ -14,10 +14,19 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Info, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus } from "lucide-react";
+import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Info, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus, ShieldCheck, AlertTriangle, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ValidationResult {
+  name: string;
+  verdict: "skill" | "knowledge" | "competency" | "experience" | "too_vague";
+  reason: string;
+  suggested: string | null;
+}
+
+type ValidationMap = Record<string, ValidationResult>; // keyed by skill_name
 
 interface Task { name: string; proficiency: string; }
 interface Competency { name: string; description: string; }
@@ -123,15 +132,37 @@ function profileToTasks(p: JobProfile): string[] {
   return p.tasks.map((t) => (t.proficiency ? `${t.name} - ${t.proficiency}` : t.name));
 }
 
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+function verdictIcon(v?: ValidationResult["verdict"]) {
+  if (!v) return null;
+  if (v === "skill") return <ShieldCheck className="h-3 w-3 text-green-600 shrink-0" />;
+  if (v === "knowledge" || v === "competency") return <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />;
+  return <XCircle className="h-3 w-3 text-red-500 shrink-0" />;
+}
+
+function verdictLabel(v: ValidationResult["verdict"]) {
+  const map: Record<string, string> = {
+    skill: "Valid skill",
+    knowledge: "Knowledge area — not a skill",
+    competency: "Behavioural competency — not a discrete skill",
+    experience: "Experience descriptor — not a skill",
+    too_vague: "Too vague to be actionable",
+  };
+  return map[v] ?? v;
+}
+
 // ── Compact skill row (name + category only) ──────────────────────────────────
 
-function EmergingSkillRow({ skill, rank }: { skill: EmergingSkill; rank: number }) {
+function EmergingSkillRow({ skill, rank, validation }: { skill: EmergingSkill; rank: number; validation?: ValidationResult }) {
+  const isInvalid = validation && validation.verdict !== "skill";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-green-50 cursor-default transition-colors">
+        <div className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors ${isInvalid ? "hover:bg-amber-50 opacity-70" : "hover:bg-green-50"}`}>
           <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
-          <span className="text-[11px] font-medium text-foreground flex-1">{skill.skill_name}</span>
+          <span className={`text-[11px] font-medium flex-1 ${isInvalid ? "text-muted-foreground line-through decoration-amber-400" : "text-foreground"}`}>{skill.skill_name}</span>
+          {validation && verdictIcon(validation.verdict)}
           {skill.category && (
             <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
@@ -139,9 +170,19 @@ function EmergingSkillRow({ skill, rank }: { skill: EmergingSkill; rank: number 
           )}
         </div>
       </TooltipTrigger>
-      <TooltipContent side="right" className="max-w-[280px] space-y-1.5 p-3">
+      <TooltipContent side="right" className="max-w-[300px] space-y-1.5 p-3">
         <p className="text-xs font-semibold">{skill.skill_name}</p>
-        <div className="flex flex-wrap gap-1">
+        {validation && (
+          <div className={`flex items-center gap-1.5 text-[10px] font-medium rounded px-1.5 py-1 ${validation.verdict === "skill" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
+            {verdictIcon(validation.verdict)}
+            {verdictLabel(validation.verdict)}
+          </div>
+        )}
+        {validation?.suggested && (
+          <p className="text-[10px] text-blue-700 italic">Suggested: "{validation.suggested}"</p>
+        )}
+        {validation?.reason && <p className="text-[10px] text-muted-foreground">{validation.reason}</p>}
+        <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${horizonStyle(skill.time_horizon)}`}>{skill.time_horizon}</span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${gapStyle(skill.profile_gap)}`}>{skill.profile_gap}</span>
@@ -179,13 +220,15 @@ const relationshipStyle = (r?: string) => {
   return "bg-muted text-muted-foreground";
 };
 
-function DiminishingSkillRow({ skill, rank }: { skill: DiminishingSkill; rank: number }) {
+function DiminishingSkillRow({ skill, rank, validation }: { skill: DiminishingSkill; rank: number; validation?: ValidationResult }) {
+  const isInvalid = validation && validation.verdict !== "skill";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-red-50 cursor-default transition-colors">
+        <div className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors ${isInvalid ? "hover:bg-amber-50 opacity-70" : "hover:bg-red-50"}`}>
           <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
-          <span className="text-[11px] font-medium text-foreground flex-1">{skill.skill_name}</span>
+          <span className={`text-[11px] font-medium flex-1 ${isInvalid ? "text-muted-foreground line-through decoration-amber-400" : "text-foreground"}`}>{skill.skill_name}</span>
+          {validation && verdictIcon(validation.verdict)}
           {skill.category && (
             <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
@@ -193,9 +236,19 @@ function DiminishingSkillRow({ skill, rank }: { skill: DiminishingSkill; rank: n
           )}
         </div>
       </TooltipTrigger>
-      <TooltipContent side="left" className="max-w-[280px] space-y-1.5 p-3">
+      <TooltipContent side="left" className="max-w-[300px] space-y-1.5 p-3">
         <p className="text-xs font-semibold">{skill.skill_name}</p>
-        <div className="flex flex-wrap gap-1">
+        {validation && (
+          <div className={`flex items-center gap-1.5 text-[10px] font-medium rounded px-1.5 py-1 ${validation.verdict === "skill" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
+            {verdictIcon(validation.verdict)}
+            {verdictLabel(validation.verdict)}
+          </div>
+        )}
+        {validation?.suggested && (
+          <p className="text-[10px] text-blue-700 italic">Suggested: "{validation.suggested}"</p>
+        )}
+        {validation?.reason && <p className="text-[10px] text-muted-foreground">{validation.reason}</p>}
+        <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
           {skill.confidence && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>}
           {skill.decline_horizon && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${declineHorizonStyle(skill.decline_horizon)}`}>{skill.decline_horizon}</span>}
           {skill.still_required_today !== undefined && (
@@ -230,12 +283,46 @@ function AnalysisCard({
   onAddToReport?: () => void;
   addingToReport?: boolean;
 }) {
+  const [validating, setValidating] = useState(false);
+  const [validationMap, setValidationMap] = useState<ValidationMap>({});
+
   const emerging = record.emerging?.emerging_skills ?? [];
   const diminishing: DiminishingSkill[] = (
     record.diminishing?.diminishing_skills ??
     record.diminishing?.skills ??
     (Array.isArray(record.diminishing) ? record.diminishing : [])
   );
+
+  const handleValidate = async () => {
+    setValidating(true);
+    try {
+      const res = await fetch("/api/validate-skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emerging,
+          diminishing,
+          jobTitle: record.profile?.title ?? record.emerging?.job_title ?? "",
+          industry: record.industry ?? "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Validation failed.");
+      const map: ValidationMap = {};
+      (data.results ?? []).forEach((r: ValidationResult) => { map[r.name] = r; });
+      setValidationMap(map);
+      const invalid = (data.results ?? []).filter((r: ValidationResult) => r.verdict !== "skill").length;
+      if (invalid === 0) toast.success("All items validated as genuine skills.");
+      else toast.warning(`${invalid} item${invalid > 1 ? "s" : ""} flagged — hover to see details.`);
+    } catch (err: any) {
+      toast.error(err.message || "Validation failed.");
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const validatedCount = Object.values(validationMap).filter(v => v.verdict === "skill").length;
+  const flaggedCount   = Object.values(validationMap).filter(v => v.verdict !== "skill").length;
 
   const analyzedDate = record.analyzedAt
     ? new Date(record.analyzedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
@@ -260,6 +347,18 @@ function AnalysisCard({
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px] gap-1.5"
+              onClick={handleValidate}
+              disabled={validating}
+            >
+              {validating
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <ShieldCheck className="h-3 w-3" />}
+              Validate
+            </Button>
             {onAddToReport && (
               <Button
                 size="sm"
@@ -285,13 +384,23 @@ function AnalysisCard({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1 flex-wrap">
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-medium">
             {emerging.length} emerging
           </span>
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-medium">
             {diminishing.length} diminishing
           </span>
+          {flaggedCount > 0 && (
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium flex items-center gap-1">
+              <AlertTriangle className="h-2.5 w-2.5" />{flaggedCount} flagged
+            </span>
+          )}
+          {validatedCount > 0 && flaggedCount === 0 && (
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium flex items-center gap-1">
+              <ShieldCheck className="h-2.5 w-2.5" />all valid
+            </span>
+          )}
           <span className="text-[10px] text-muted-foreground ml-1">hover a skill for details</span>
         </div>
       </CardHeader>
@@ -306,7 +415,7 @@ function AnalysisCard({
             </div>
             {emerging.length === 0
               ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
-              : emerging.map((s, i) => <EmergingSkillRow key={i} skill={s} rank={i + 1} />)
+              : emerging.map((s, i) => <EmergingSkillRow key={i} skill={s} rank={i + 1} validation={validationMap[s.skill_name]} />)
             }
           </div>
 
@@ -318,7 +427,7 @@ function AnalysisCard({
             </div>
             {diminishing.length === 0
               ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
-              : diminishing.map((s, i) => <DiminishingSkillRow key={i} skill={s} rank={i + 1} />)
+              : diminishing.map((s, i) => <DiminishingSkillRow key={i} skill={s} rank={i + 1} validation={validationMap[s.skill_name]} />)
             }
           </div>
         </div>

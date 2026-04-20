@@ -748,6 +748,56 @@ app.post("/api/full-analysis", async (req, res) => {
   }
 });
 
+// ── Skill Validation ─────────────────────────────────────────────────────────
+
+app.post("/api/validate-skills", async (req, res) => {
+  const { emerging = [], diminishing = [], jobTitle = "", industry = "" } = req.body;
+  const allNames: string[] = [
+    ...emerging.map((s: any) => s.skill_name ?? s),
+    ...diminishing.map((s: any) => s.skill_name ?? s),
+  ].filter(Boolean);
+
+  if (!allNames.length) return res.status(400).json({ error: "No skill names provided." });
+
+  const prompt = `You are a skills taxonomy expert. Your job is to review a list of items extracted from a job role analysis and determine whether each one is a genuine, learnable, demonstrable SKILL or something else.
+
+Context: Role = "${jobTitle}", Industry = "${industry}"
+
+DEFINITIONS:
+- "skill": A specific, learnable, practisable capability with a demonstrable output. Examples: "Prompt Engineering", "CI/CD Pipeline Design", "SQL Query Optimisation".
+- "knowledge": A broad awareness or information domain — not something you practice or improve through repetition. Examples: "Basic customer knowledge", "Business line knowledge", "Industry awareness".
+- "competency": A behavioural or cognitive trait, not a discrete learnable item. Examples: "Stakeholder Influence", "Analytical Thinking", "Problem Anticipation".
+- "experience": A past exposure, not a skill. Examples: "Project management experience", "Client-facing experience".
+- "too_vague": Too generic to be actionable. Examples: "IT knowledge", "Technical skills", "Digital awareness".
+
+TASK: For each item, return:
+- verdict: "skill" | "knowledge" | "competency" | "experience" | "too_vague"
+- reason: one short sentence explaining why
+- suggested: if verdict is NOT "skill", provide a rephrased version that would be a proper skill name (or null if it should be removed entirely)
+
+Items to validate:
+${allNames.map((n, i) => `${i + 1}. ${n}`).join("\n")}
+
+Return ONLY valid JSON:
+{
+  "results": [
+    { "name": "...", "verdict": "skill|knowledge|competency|experience|too_vague", "reason": "...", "suggested": "..." | null }
+  ]
+}`;
+
+  try {
+    const msg = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2048,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const raw = msg.content[0].type === "text" ? msg.content[0].text : "{}";
+    res.json(parseClaudeJson(raw));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Validation failed." });
+  }
+});
+
 // ── Skills Report (XLSX export) ───────────────────────────────────────────────
 
 import ExcelJS from "exceljs";
