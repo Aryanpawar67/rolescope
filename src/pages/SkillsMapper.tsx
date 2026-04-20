@@ -280,7 +280,7 @@ function AnalysisCard({
 }: {
   record: AnalysisRecord;
   onDelete?: () => void;
-  onAddToReport?: () => void;
+  onAddToReport?: (correctedRecord: AnalysisRecord) => void;
   addingToReport?: boolean;
 }) {
   const [validating, setValidating] = useState(false);
@@ -293,7 +293,12 @@ function AnalysisCard({
     (Array.isArray(record.diminishing) ? record.diminishing : [])
   );
 
-  const handleValidate = async () => {
+  // Run validation automatically when the card mounts
+  useEffect(() => {
+    if (emerging.length > 0 || diminishing.length > 0) runValidation();
+  }, [record.profileId]);
+
+  const runValidation = async (): Promise<ValidationMap> => {
     setValidating(true);
     try {
       const res = await fetch("/api/validate-skills", {
@@ -313,12 +318,44 @@ function AnalysisCard({
       setValidationMap(map);
       const invalid = (data.results ?? []).filter((r: ValidationResult) => r.verdict !== "skill").length;
       if (invalid === 0) toast.success("All items validated as genuine skills.");
-      else toast.warning(`${invalid} item${invalid > 1 ? "s" : ""} flagged — hover to see details.`);
+      else toast.warning(`${invalid} item${invalid > 1 ? "s" : ""} flagged — hover skills for details.`);
+      return map;
     } catch (err: any) {
       toast.error(err.message || "Validation failed.");
+      return {};
     } finally {
       setValidating(false);
     }
+  };
+
+  // Build corrected record: rename flagged skills with suggestions, drop unfixable ones
+  const buildCorrectedRecord = (map: ValidationMap): AnalysisRecord => {
+    const correct = <T extends { skill_name: string }>(skills: T[]): T[] =>
+      skills
+        .filter(s => {
+          const v = map[s.skill_name];
+          return !v || v.verdict === "skill" || v.suggested !== null;
+        })
+        .map(s => {
+          const v = map[s.skill_name];
+          return v && v.verdict !== "skill" && v.suggested
+            ? { ...s, skill_name: v.suggested }
+            : s;
+        });
+
+    return {
+      ...record,
+      emerging:    { ...record.emerging,    emerging_skills:    correct(emerging) },
+      diminishing: { ...record.diminishing, diminishing_skills: correct(diminishing) },
+    };
+  };
+
+  const handleAddToReportClick = async () => {
+    let map = validationMap;
+    if (Object.keys(map).length === 0) {
+      map = await runValidation();
+    }
+    onAddToReport?.(buildCorrectedRecord(map));
   };
 
   const validatedCount = Object.values(validationMap).filter(v => v.verdict === "skill").length;
@@ -347,30 +384,18 @@ function AnalysisCard({
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-[11px] gap-1.5"
-              onClick={handleValidate}
-              disabled={validating}
-            >
-              {validating
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <ShieldCheck className="h-3 w-3" />}
-              Validate
-            </Button>
             {onAddToReport && (
               <Button
                 size="sm"
                 variant="outline"
                 className="h-7 text-[11px] gap-1.5 border-green-300 text-green-700 hover:bg-green-50"
-                onClick={onAddToReport}
-                disabled={addingToReport}
+                onClick={handleAddToReportClick}
+                disabled={addingToReport || validating}
               >
-                {addingToReport
+                {addingToReport || validating
                   ? <Loader2 className="h-3 w-3 animate-spin" />
                   : <Plus className="h-3 w-3" />}
-                Add to Report
+                {validating ? "Validating…" : "Add to Report"}
               </Button>
             )}
             {onDelete && (
@@ -738,7 +763,7 @@ const SkillsMapper = () => {
             {liveResult && (
               <AnalysisCard
                 record={liveResult}
-                onAddToReport={() => setConfirmRecord(liveResult)}
+                onAddToReport={(corrected) => setConfirmRecord(corrected)}
                 addingToReport={addingToReport === liveResult.profileId}
               />
             )}
@@ -773,7 +798,7 @@ const SkillsMapper = () => {
                         key={r.profileId}
                         record={r}
                         onDelete={() => handleDelete(r.profileId)}
-                        onAddToReport={() => setConfirmRecord(r)}
+                        onAddToReport={(corrected) => setConfirmRecord(corrected)}
                         addingToReport={addingToReport === r.profileId}
                       />
                     ))}
