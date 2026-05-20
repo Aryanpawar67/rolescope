@@ -511,6 +511,12 @@ function MultiModelResultGrid({
   );
 
   const refRun = record.runs[referenceModelId];
+
+  const runsWithData = runEntries.filter(([, run]) =>
+    (run.emerging?.emerging_skills?.length ?? 0) > 0 ||
+    (run.diminishing?.diminishing_skills?.length ?? run.diminishing?.skills?.length ?? 0) > 0
+  );
+  const canEvaluate = runsWithData.length >= 2;
   const analyzedDate = refRun?.analyzedAt
     ? new Date(refRun.analyzedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
     : "";
@@ -537,7 +543,7 @@ function MultiModelResultGrid({
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {onEvaluate && (
+            {onEvaluate && canEvaluate && (
               <Button
                 size="sm"
                 variant="outline"
