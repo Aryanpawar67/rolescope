@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import { buildSkillsPipelinePrompt } from "./src/prompts/skills-pipeline.js";
 import { buildDiminishingSkillsPrompt } from "./src/prompts/diminishing-skills.js";
+import { callModel, ModelId } from "./src/llm/clients.js";
 import "dotenv/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -602,10 +603,10 @@ app.post("/api/skills-pipeline", async (req, res) => {
     const input = buildPipelineInput(req.body);
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 8192,
+      max_tokens: 16384,
       messages: [{ role: "user", content: buildSkillsPipelinePrompt(input) }],
     });
-    const raw = message.content[0].type === "text" ? message.content[0].text : "{}";
+    const raw = message.content[0].type === "text" ? message.content[0].text : "";
     res.json(parseClaudeJson(raw));
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Skills pipeline failed." });
@@ -614,9 +615,30 @@ app.post("/api/skills-pipeline", async (req, res) => {
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 
+function migrateRecord(record: any): any {
+  if (record.runs) return record;
+  // Lift old flat emerging/diminishing into runs["claude-sonnet-4-6"]
+  const run: any = { analyzedAt: record.analyzedAt };
+  if (record.emerging)    run.emerging    = record.emerging;
+  if (record.diminishing) run.diminishing = record.diminishing;
+  if (record.warnings)    run.warnings    = record.warnings;
+  return {
+    profileId:  record.profileId,
+    profile:    record.profile ?? null,
+    orgName:    record.orgName ?? "",
+    industry:   record.industry ?? "",
+    department: record.department ?? "",
+    runs: { "claude-sonnet-4-6": run },
+  };
+}
+
 function readResults(): Record<string, any> {
   try {
-    return fs.existsSync(RESULTS_PATH) ? JSON.parse(fs.readFileSync(RESULTS_PATH, "utf-8")) : {};
+    if (!fs.existsSync(RESULTS_PATH)) return {};
+    const raw = JSON.parse(fs.readFileSync(RESULTS_PATH, "utf-8"));
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = migrateRecord(v);
+    return out;
   } catch { return {}; }
 }
 
@@ -640,7 +662,6 @@ app.delete("/api/stored-results/:profileId", (req, res) => {
 function buildPipelineInput(body: any) {
   const { jdText, tasks, orgName, industry, jobTitle, department, profile } = body;
   const profKnowledge: string[] = profile?.professionalKnowledge ?? [];
-  const competencies: Array<{ name: string; description: string }> = profile?.competencies ?? [];
   const profileTasks: Array<{ name: string; proficiency: string }> = profile?.tasks ?? [];
   const resolvedTasks = profileTasks.length
     ? profileTasks
@@ -648,28 +669,92 @@ function buildPipelineInput(body: any) {
   return {
     orgName: orgName?.trim() || "",
     industry: industry?.trim() || "",
-    jobTitle: jobTitle?.trim() || profile?.title || "",
+    job_profile_name: jobTitle?.trim() || profile?.title || "",
     department: department?.trim() || profile?.subFamily || "",
     jdText: jdText.trim(),
     skillsList: deriveSkillsList(profKnowledge),
-    capabilitiesList: deriveCapabilitiesList(competencies),
-    skillCapabilityMapping: deriveSkillCapabilityMapping(profKnowledge, competencies),
     tasksList: resolvedTasks.map((t, i) => `${i + 1}. ${t.name}`).join("\n"),
     taskSkillMapping: deriveTaskSkillMapping(resolvedTasks, profKnowledge),
   };
 }
 
+class ClaudeJsonParseError extends Error {
+  constructor(message: string, public readonly rawLength: number) {
+    super(message);
+    this.name = "ClaudeJsonParseError";
+  }
+}
+
 function parseClaudeJson(raw: string): any {
   const stripped = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
-  const match = stripped.match(/\{[\s\S]*\}/);
-  if (!match) return {};
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    // Truncated JSON — attempt to extract partial skills array before bailing
-    console.error("[parseClaudeJson] JSON.parse failed, raw length:", match[0].length);
-    return {};
+  const firstBrace = stripped.indexOf("{");
+  if (firstBrace === -1) {
+    throw new ClaudeJsonParseError("No JSON object found in response", stripped.length);
   }
+  const candidate = stripped.slice(firstBrace);
+
+  try {
+    return JSON.parse(candidate);
+  } catch {}
+
+  const salvaged = salvageTruncatedSkillsJson(candidate);
+  if (salvaged) return salvaged;
+
+  console.error("[parseClaudeJson] parse + salvage failed, raw length:", candidate.length);
+  throw new ClaudeJsonParseError("Response was not valid JSON and could not be salvaged", candidate.length);
+}
+
+// Rescue responses that got cut off mid-array (the common cause of blank rows).
+// Walks the outer `{ ... "<skills_key>": [ {...}, {...}, ... ] }` shape, keeps every
+// complete element up to the point of truncation, and returns a well-formed object.
+function salvageTruncatedSkillsJson(s: string): any | null {
+  const arrayKeys = ["emerging_skills", "diminishing_skills"];
+  for (const key of arrayKeys) {
+    const keyIdx = s.indexOf(`"${key}"`);
+    if (keyIdx === -1) continue;
+    const openBracket = s.indexOf("[", keyIdx);
+    if (openBracket === -1) continue;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let lastElementEnd = -1;
+
+    for (let i = openBracket + 1; i < s.length; i++) {
+      const ch = s[i];
+      if (escape) { escape = false; continue; }
+      if (ch === "\\" && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{" || ch === "[") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) lastElementEnd = i + 1;
+      } else if (ch === "]") {
+        if (depth === 0) { lastElementEnd = i; break; }
+        depth--;
+      }
+    }
+
+    if (lastElementEnd === -1) continue;
+
+    // Support both new (job_profile_name) and old (job_title) field names
+    const profileNameKey = s.includes('"job_profile_name"') ? "job_profile_name" : "job_title";
+    const profileNameMatch = s.match(/"job_profile_name"\s*:\s*"([^"]*)"/) ?? s.match(/"job_title"\s*:\s*"([^"]*)"/);
+    const profileNameVal = profileNameMatch?.[1] ?? "";
+    const analysisDate = (s.match(/"analysis_date"\s*:\s*"([^"]*)"/) ?? [, ""])[1];
+    let arrBody = s.slice(openBracket + 1, lastElementEnd).trim();
+    if (arrBody.endsWith(",")) arrBody = arrBody.slice(0, -1);
+
+    const recovered = `{"${profileNameKey}":${JSON.stringify(profileNameVal)},"analysis_date":${JSON.stringify(analysisDate)},"${key}":[${arrBody}]}`;
+    try {
+      const parsed = JSON.parse(recovered);
+      if (Array.isArray(parsed[key]) && parsed[key].length > 0) return parsed;
+    } catch {
+      // fall through to next key
+    }
+  }
+  return null;
 }
 
 // ── Diminishing Skills Pipeline ───────────────────────────────────────────────
@@ -685,10 +770,10 @@ app.post("/api/diminishing-skills", async (req, res) => {
     const prompt = buildDiminishingSkillsPrompt(input);
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 8192,
+      max_tokens: 16384,
       messages: [{ role: "user", content: prompt }],
     });
-    const raw = message.content[0].type === "text" ? message.content[0].text : "{}";
+    const raw = message.content[0].type === "text" ? message.content[0].text : "";
     res.json(parseClaudeJson(raw));
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Diminishing skills pipeline failed." });
@@ -696,6 +781,37 @@ app.post("/api/diminishing-skills", async (req, res) => {
 });
 
 // ── Full Analysis (both pipelines in parallel + auto-save) ────────────────────
+
+type SideResult =
+  | { ok: true; value: any }
+  | { ok: false; error: string };
+
+async function runAnalysisSide(
+  promptBuilder: (input: any) => string,
+  input: any,
+  sideName: string,
+): Promise<SideResult> {
+  // Two attempts at 16 384 tokens — covers both truncation and transient API hiccups.
+  // Empirically the emerging prompt's 8–12 structured items occasionally exceeded 8 192.
+  const maxTokens = 16384;
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const message = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content: promptBuilder(input) }],
+      });
+      const raw = message.content[0].type === "text" ? message.content[0].text : "";
+      const parsed = parseClaudeJson(raw);
+      return { ok: true, value: parsed };
+    } catch (err: any) {
+      lastError = err;
+      console.error(`[${sideName}] attempt ${attempt} failed: ${err?.message ?? err}`);
+    }
+  }
+  return { ok: false, error: lastError?.message ?? "unknown error" };
+}
 
 app.post("/api/full-analysis", async (req, res) => {
   const { jdText, tasks, profile } = req.body;
@@ -705,46 +821,129 @@ app.post("/api/full-analysis", async (req, res) => {
 
   try {
     const input = buildPipelineInput(req.body);
+    const profileId = `profile_${profile?.id ?? Date.now()}`;
+    const all = readResults();
+    const existing = all[profileId];
 
-    const [emergingRaw, diminishingRaw] = await Promise.all([
-      client.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 8192,
-        messages: [{ role: "user", content: buildSkillsPipelinePrompt(input) }],
-      }),
-      client.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 8192,
-        messages: [{ role: "user", content: buildDiminishingSkillsPrompt(input) }],
-      }),
+    const [emergingRes, diminishingRes] = await Promise.all([
+      runAnalysisSide(buildSkillsPipelinePrompt, input, "emerging"),
+      runAnalysisSide(buildDiminishingSkillsPrompt, input, "diminishing"),
     ]);
 
-    const emerging = parseClaudeJson(
-      emergingRaw.content[0].type === "text" ? emergingRaw.content[0].text : "{}"
-    );
-    const diminishing = parseClaudeJson(
-      diminishingRaw.content[0].type === "text" ? diminishingRaw.content[0].text : "{}"
-    );
+    // Never clobber a previously-good side with an empty/failed payload.
+    const pickSide = (result: SideResult, prev: any): any | null => {
+      if (result.ok) return result.value;
+      if (prev && typeof prev === "object" && Object.keys(prev).length > 0) return prev;
+      return null;
+    };
 
-    const profileId = `profile_${profile?.id ?? Date.now()}`;
-    const record = {
+    const warnings: string[] = [];
+    if (emergingRes.ok === false) warnings.push(`emerging side failed: ${emergingRes.error}`);
+    if (diminishingRes.ok === false) warnings.push(`diminishing side failed: ${diminishingRes.error}`);
+
+    const record: any = {
       profileId,
       profile: profile ?? null,
       orgName: input.orgName,
       industry: input.industry,
       department: input.department,
       analyzedAt: new Date().toISOString(),
-      emerging,
-      diminishing,
+      emerging: pickSide(emergingRes, existing?.emerging),
+      diminishing: pickSide(diminishingRes, existing?.diminishing),
     };
+    if (warnings.length) record.warnings = warnings;
 
-    const all = readResults();
     all[profileId] = record;
     writeResults(all);
 
-    res.json(record);
+    const statusCode = emergingRes.ok && diminishingRes.ok ? 200 : 207;
+    res.status(statusCode).json(record);
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Full analysis failed." });
+  }
+});
+
+// ── Multi-model analysis ──────────────────────────────────────────────────────
+
+async function runAnalysisSideWithModel(
+  promptBuilder: (input: any) => string,
+  input: any,
+  sideName: string,
+  modelId: ModelId,
+): Promise<SideResult> {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const result = await callModel(modelId, { prompt: promptBuilder(input), maxTokens: 16384 });
+      return { ok: true, value: parseClaudeJson(result.text) };
+    } catch (err: any) {
+      lastError = err;
+      console.error(`[${sideName}][${modelId}] attempt ${attempt} failed: ${err?.message ?? err}`);
+    }
+  }
+  return { ok: false, error: lastError?.message ?? "unknown error" };
+}
+
+app.post("/api/full-analysis-multi", async (req, res) => {
+  const { jdText, tasks, profile, models } = req.body;
+  if (!jdText?.trim()) return res.status(400).json({ error: "jdText is required." });
+  if (!Array.isArray(tasks) || tasks.length === 0)
+    return res.status(400).json({ error: "tasks array is required." });
+  if (!Array.isArray(models) || models.length === 0)
+    return res.status(400).json({ error: "models array is required." });
+
+  try {
+    const input = buildPipelineInput(req.body);
+    const profileId = `profile_${profile?.id ?? Date.now()}`;
+    const all = readResults();
+    const existingRuns: Record<string, any> = all[profileId]?.runs ?? {};
+
+    // Fan out to all models in parallel; each model runs emerging + diminishing in parallel
+    const modelResults = await Promise.all(
+      (models as ModelId[]).map(async (modelId) => {
+        const [emergingRes, diminishingRes] = await Promise.all([
+          runAnalysisSideWithModel(buildSkillsPipelinePrompt, input, "emerging", modelId),
+          runAnalysisSideWithModel(buildDiminishingSkillsPrompt, input, "diminishing", modelId),
+        ]);
+        return { modelId, emergingRes, diminishingRes };
+      })
+    );
+
+    const newRuns: Record<string, any> = { ...existingRuns };
+    const overallWarnings: string[] = [];
+
+    for (const { modelId, emergingRes, diminishingRes } of modelResults) {
+      const warnings: string[] = [];
+      if (!emergingRes.ok)    warnings.push(`emerging failed: ${emergingRes.error}`);
+      if (!diminishingRes.ok) warnings.push(`diminishing failed: ${diminishingRes.error}`);
+
+      const prev = existingRuns[modelId];
+      newRuns[modelId] = {
+        emerging:    emergingRes.ok    ? emergingRes.value    : prev?.emerging    ?? null,
+        diminishing: diminishingRes.ok ? diminishingRes.value : prev?.diminishing ?? null,
+        analyzedAt:  new Date().toISOString(),
+        ...(warnings.length ? { warnings } : {}),
+      };
+      if (warnings.length) overallWarnings.push(`[${modelId}] ${warnings.join("; ")}`);
+    }
+
+    const record: any = {
+      profileId,
+      profile: profile ?? null,
+      orgName:    input.orgName,
+      industry:   input.industry,
+      department: input.department,
+      runs: newRuns,
+      ...(overallWarnings.length ? { warnings: overallWarnings } : {}),
+    };
+
+    all[profileId] = record;
+    writeResults(all);
+
+    const allOk = modelResults.every(r => r.emergingRes.ok && r.diminishingRes.ok);
+    res.status(allOk ? 200 : 207).json(record);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Multi-model analysis failed." });
   }
 });
 
@@ -802,8 +1001,9 @@ Return ONLY valid JSON:
 
 import ExcelJS from "exceljs";
 
-const REPORT_PATH      = path.resolve(__dirname, "data/skills-analysis-report.xlsx");
-const SHEET_DATA_PATH  = path.resolve(__dirname, "data/sheet-data.json");
+const IS_VERCEL        = !!process.env.VERCEL;
+const REPORT_PATH      = IS_VERCEL ? "/tmp/skills-analysis-report.xlsx" : path.resolve(__dirname, "data/skills-analysis-report.xlsx");
+const SHEET_DATA_PATH  = IS_VERCEL ? "/tmp/sheet-data.json"             : path.resolve(__dirname, "data/sheet-data.json");
 
 interface SheetRow {
   sno: number;
@@ -850,135 +1050,137 @@ function applyThickBorder(cell: ExcelJS.Cell) {
   cell.border = { top: thick, left: thick, bottom: thick, right: thick };
 }
 
-async function appendRecordToReport(record: any): Promise<void> {
+function buildWorksheetFromRecords(ws: ExcelJS.Worksheet, records: any[]): void {
+  ws.columns = [
+    { key: "sno",        width: 5  },
+    { key: "role",       width: 32 },
+    { key: "jd",         width: 48 },
+    { key: "emerging",   width: 42 },
+    { key: "diminishing",width: 42 },
+    { key: "date",       width: 14 },
+  ];
+
+  // Title row
+  const titleRow = ws.addRow(["Skills Analysis Report", "", "", "", "", ""]);
+  ws.mergeCells(`A${titleRow.number}:F${titleRow.number}`);
+  const titleCell = titleRow.getCell(1);
+  titleCell.value = "Skills Analysis Report";
+  titleCell.font  = { name: "Calibri", bold: true, size: 16, color: { argb: "FFFFFFFF" } };
+  titleCell.fill  = HEADER_FILL;
+  titleCell.alignment = { horizontal: "center", vertical: "middle" };
+  titleRow.height = 32;
+
+  // Column header row
+  const headers = ["#", "Role / Job Title", "Job Description", "Emerging Skills ▲", "Diminishing Skills ▼", "Analysis Date"];
+  const hRow = ws.addRow(headers);
+  hRow.height = 22;
+  hRow.eachCell((cell) => {
+    cell.font  = { name: "Calibri", bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+    cell.fill  = HEADER_FILL;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    applyThickBorder(cell);
+  });
+
+  records.forEach((record, idx) => {
+    const emerging: string[]    = (record.emerging?.emerging_skills  ?? []).map((s: any) => s.skill_name);
+    const diminishing: string[] = (
+      record.diminishing?.diminishing_skills ??
+      record.diminishing?.skills ??
+      []
+    ).map((s: any) => s.skill_name);
+
+    const rowCount = Math.max(emerging.length, diminishing.length, 1);
+    const role     = record.profile?.title ?? record.emerging?.job_title ?? "—";
+    const jd       = record.profile?.purpose ?? record.emerging?.jd ?? "";
+    const dateStr  = record.analyzedAt
+      ? new Date(record.analyzedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+      : "";
+    const sno = idx + 1;
+    const startRow = ws.rowCount + 1;
+
+    for (let i = 0; i < rowCount; i++) {
+      const r = ws.addRow([
+        i === 0 ? sno  : "",
+        i === 0 ? role : "",
+        i === 0 ? jd   : "",
+        emerging[i]    ?? "",
+        diminishing[i] ?? "",
+        i === 0 ? dateStr : "",
+      ]);
+      r.height = 18;
+
+      [1, 2, 3, 6].forEach((col) => {
+        const c = r.getCell(col);
+        c.fill = META_FILL;
+        c.font = { name: "Calibri", size: 10 };
+        c.alignment = { vertical: "top", wrapText: true };
+        applyBorder(c);
+      });
+
+      const ec = r.getCell(4);
+      ec.fill = EMERGING_FILL;
+      ec.font = { name: "Calibri", size: 10, color: { argb: "FF1B5E20" } };
+      ec.alignment = { vertical: "middle", wrapText: true };
+      applyBorder(ec);
+
+      const dc = r.getCell(5);
+      dc.fill = DIMINISHING_FILL;
+      dc.font = { name: "Calibri", size: 10, color: { argb: "FFB71C1C" } };
+      dc.alignment = { vertical: "middle", wrapText: true };
+      applyBorder(dc);
+    }
+
+    const endRow = startRow + rowCount - 1;
+    if (rowCount > 1) {
+      [1, 2, 3, 6].forEach((col) => {
+        const colLetter = ["A","B","C","D","E","F"][col - 1];
+        ws.mergeCells(`${colLetter}${startRow}:${colLetter}${endRow}`);
+        ws.getCell(`${colLetter}${startRow}`).alignment = { vertical: "middle", wrapText: true };
+      });
+    }
+
+    const sepRow = ws.addRow(["", "", "", "", "", ""]);
+    sepRow.height = 6;
+    sepRow.eachCell((cell) => { cell.fill = SEPARATOR_FILL; });
+  });
+}
+
+async function generateSheetBuffer(records: any[]): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
-  const sheetName = "Skills Analysis";
+  const ws = wb.addWorksheet("Skills Analysis");
+  buildWorksheetFromRecords(ws, records);
+  const arrayBuf = await wb.xlsx.writeBuffer();
+  return Buffer.from(arrayBuf);
+}
 
-  // Load existing or create fresh
-  let ws: ExcelJS.Worksheet;
-  if (fs.existsSync(REPORT_PATH)) {
-    await wb.xlsx.readFile(REPORT_PATH);
-    ws = wb.getWorksheet(sheetName) ?? wb.addWorksheet(sheetName);
-  } else {
-    ws = wb.addWorksheet(sheetName);
-  }
-
-  // ── Column widths (set once, idempotent) ─────────────────────────────────
-  if (ws.rowCount === 0) {
-    ws.columns = [
-      { key: "sno",        width: 5  },
-      { key: "role",       width: 32 },
-      { key: "jd",         width: 48 },
-      { key: "emerging",   width: 42 },
-      { key: "diminishing",width: 42 },
-      { key: "date",       width: 14 },
-    ];
-  }
-
-  // ── Header row (only if sheet is brand new) ───────────────────────────────
-  const isNew = ws.rowCount === 0;
-  if (isNew) {
-    // Title row
-    const titleRow = ws.addRow(["Skills Analysis Report", "", "", "", "", ""]);
-    ws.mergeCells(`A${titleRow.number}:F${titleRow.number}`);
-    const titleCell = titleRow.getCell(1);
-    titleCell.value = "Skills Analysis Report";
-    titleCell.font  = { name: "Calibri", bold: true, size: 16, color: { argb: "FFFFFFFF" } };
-    titleCell.fill  = HEADER_FILL;
-    titleCell.alignment = { horizontal: "center", vertical: "middle" };
-    titleRow.height = 32;
-
-    // Column header row
-    const headers = ["#", "Role / Job Title", "Job Description", "Emerging Skills ▲", "Diminishing Skills ▼", "Analysis Date"];
-    const hRow = ws.addRow(headers);
-    hRow.height = 22;
-    hRow.eachCell((cell) => {
-      cell.font  = { name: "Calibri", bold: true, size: 11, color: { argb: "FFFFFFFF" } };
-      cell.fill  = HEADER_FILL;
-      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      applyThickBorder(cell);
-    });
-  }
-
-  // ── Data ──────────────────────────────────────────────────────────────────
-  const emerging: string[]   = (record.emerging?.emerging_skills  ?? []).map((s: any) => s.skill_name);
+async function appendRecordToReport(record: any): Promise<void> {
+  // Build sheet-data sidecar
+  const emerging: string[]    = (record.emerging?.emerging_skills  ?? []).map((s: any) => s.skill_name);
   const diminishing: string[] = (
     record.diminishing?.diminishing_skills ??
     record.diminishing?.skills ??
     []
   ).map((s: any) => s.skill_name);
-
-  const rowCount = Math.max(emerging.length, diminishing.length, 1);
-  const role     = record.profile?.title ?? record.emerging?.job_title ?? "—";
-  const jd       = record.profile?.purpose ?? record.emerging?.jd ?? "";
-  const dateStr  = record.analyzedAt
+  const role    = record.profile?.title ?? record.emerging?.job_title ?? "—";
+  const jd      = record.profile?.purpose ?? record.emerging?.jd ?? "";
+  const dateStr = record.analyzedAt
     ? new Date(record.analyzedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
     : "";
 
-  // S.No = count of unique roles already in sheet (approximate)
-  const existingSno = Math.max(0, ...ws.getColumn(1).values
-    .filter((v): v is number => typeof v === "number"));
-  const sno = existingSno + 1;
-
-  const startRow = ws.rowCount + 1;
-
-  for (let i = 0; i < rowCount; i++) {
-    const r = ws.addRow([
-      i === 0 ? sno  : "",
-      i === 0 ? role : "",
-      i === 0 ? jd   : "",
-      emerging[i]   ?? "",
-      diminishing[i] ?? "",
-      i === 0 ? dateStr : "",
-    ]);
-    r.height = 18;
-
-    // Cells 1–3 and 6: meta style
-    [1, 2, 3, 6].forEach((col) => {
-      const c = r.getCell(col);
-      c.fill = META_FILL;
-      c.font = { name: "Calibri", size: 10 };
-      c.alignment = { vertical: "top", wrapText: true };
-      applyBorder(c);
-    });
-
-    // Cell 4: emerging
-    const ec = r.getCell(4);
-    ec.fill = EMERGING_FILL;
-    ec.font = { name: "Calibri", size: 10, color: { argb: "FF1B5E20" } };
-    ec.alignment = { vertical: "middle", wrapText: true };
-    applyBorder(ec);
-
-    // Cell 5: diminishing
-    const dc = r.getCell(5);
-    dc.fill = DIMINISHING_FILL;
-    dc.font = { name: "Calibri", size: 10, color: { argb: "FFB71C1C" } };
-    dc.alignment = { vertical: "middle", wrapText: true };
-    applyBorder(dc);
-  }
-
-  // Merge meta columns vertically
-  const endRow = startRow + rowCount - 1;
-  if (rowCount > 1) {
-    [1, 2, 3, 6].forEach((col) => {
-      const colLetter = ["A","B","C","D","E","F"][col - 1];
-      ws.mergeCells(`${colLetter}${startRow}:${colLetter}${endRow}`);
-      const mergedCell = ws.getCell(`${colLetter}${startRow}`);
-      mergedCell.alignment = { vertical: "middle", wrapText: true };
-    });
-  }
-
-  // Separator row
-  const sepRow = ws.addRow(["", "", "", "", "", ""]);
-  sepRow.height = 6;
-  sepRow.eachCell((cell) => { cell.fill = SEPARATOR_FILL; });
-
-  await wb.xlsx.writeFile(REPORT_PATH);
-
-  // ── JSON sidecar for live preview ────────────────────────────────────────
   const existingRows = readSheetData();
+  const sno = existingRows.length + 1;
   existingRows.push({ sno, role, jd, date: dateStr, emerging, diminishing });
   writeSheetData(existingRows);
+
+  // Regenerate XLSX from all accumulated rows (keeps file consistent)
+  const allRecords = existingRows.map((row) => ({
+    profile: { title: row.role, purpose: row.jd },
+    analyzedAt: row.date,
+    emerging:   { emerging_skills:   row.emerging.map((s: string) => ({ skill_name: s })) },
+    diminishing: { diminishing_skills: row.diminishing.map((s: string) => ({ skill_name: s })) },
+  }));
+  const buf = await generateSheetBuffer(allRecords);
+  fs.writeFileSync(REPORT_PATH, buf);
 }
 
 // GET /api/sheet-data — live preview data
@@ -1010,6 +1212,23 @@ app.get("/api/download-sheet", (_req, res) => {
 // GET /api/sheet-status
 app.get("/api/sheet-status", (_req, res) => {
   res.json({ exists: fs.existsSync(REPORT_PATH) });
+});
+
+// POST /api/generate-sheet — stateless: accepts records[], returns XLSX buffer directly (works on Vercel)
+app.post("/api/generate-sheet", async (req, res) => {
+  const { records } = req.body;
+  if (!Array.isArray(records) || records.length === 0) {
+    return res.status(400).json({ error: "records array is required." });
+  }
+  try {
+    const buf = await generateSheetBuffer(records);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="skills-analysis-report.xlsx"');
+    res.send(buf);
+  } catch (err: any) {
+    console.error("[generate-sheet]", err);
+    res.status(500).json({ error: err.message || "Generation failed." });
+  }
 });
 
 export default app;

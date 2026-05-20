@@ -1,12 +1,10 @@
 export interface SkillsPipelineInput {
   orgName: string;
   industry: string;
-  jobTitle: string;
+  job_profile_name: string;
   department: string;
   jdText: string;
   skillsList: string;        // derived from professional knowledge
-  capabilitiesList: string;  // derived from competencies
-  skillCapabilityMapping: string;
   tasksList: string;         // derived from tasks array
   taskSkillMapping: string;
 }
@@ -38,7 +36,7 @@ Organisation: ${input.orgName || "Not specified"}
 
 Industry: ${input.industry || "Not specified"}
 
-Job Title: ${input.jobTitle}
+Job Profile Name: ${input.job_profile_name}
 
 Department: ${input.department || "Not specified"}
 
@@ -49,14 +47,6 @@ ${input.jdText}
 Current Skills:
 
 ${input.skillsList}
-
-Capabilities:
-
-${input.capabilitiesList}
-
-Skill–Capability Mapping:
-
-${input.skillCapabilityMapping}
 
 Tasks:
 
@@ -96,7 +86,7 @@ captured in the profile?
 
 {
 
-"job_title": "string",
+"job_profile_name": "string",
 
 "analysis_date": "string",
 
@@ -120,8 +110,6 @@ framework migration, cloud-native transition)",
 
 "reasoning": "string — 1–2 sentences specific to this role and industry",
 
-"profile_gap": "absent | adjacent | present-but-evolving",
-
 "co_emerging_skills": ["string", "string"]
 
 }
@@ -132,7 +120,11 @@ framework migration, cloud-native transition)",
 
 Rules:
 
-- Return 8–12 skills
+- Return all skills that are genuinely emerging for this role based solely on
+
+the provided job description — do not hallucinate or add generic market skills
+
+not grounded in the JD
 
 - Order: high confidence first, then by nearest time_horizon
 
@@ -140,17 +132,7 @@ Rules:
 
 evolving into a meaningfully different form
 
-- profile_gap values:
-
-absent = not on the profile at all
-
-adjacent = natural extension of a skill already on the profile
-
-present-but-evolving = on the profile but the nature of the skill
-
-is changing significantly
-
-- Keep reasoning specific to ${input.jobTitle} in ${input.industry || "this industry"},
+- Keep reasoning specific to ${input.job_profile_name} in ${input.industry || "this industry"},
 
 not generic industry commentary
 

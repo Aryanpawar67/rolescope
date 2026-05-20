@@ -1,12 +1,10 @@
 export interface DiminishingSkillsInput {
   orgName: string;
   industry: string;
-  jobTitle: string;
+  job_profile_name: string;
   department: string;
   jdText: string;
   skillsList: string;
-  capabilitiesList: string;
-  skillCapabilityMapping: string;
   tasksList: string;
   taskSkillMapping: string;
 }
@@ -44,7 +42,7 @@ Organisation: ${input.orgName || "Not specified"}
 
 Industry: ${input.industry || "Not specified"}
 
-Job Title: ${input.jobTitle}
+Job Profile Name: ${input.job_profile_name}
 
 Department: ${input.department || "Not specified"}
 
@@ -53,13 +51,6 @@ ${input.jdText}
 
 Current Skills:
 ${input.skillsList}
-
-Capabilities:
-${input.capabilitiesList}
-
-Skill–Capability Mapping:
-
-${input.skillCapabilityMapping}
 
 Tasks:
 
@@ -100,7 +91,7 @@ a direct swap or a broader capability shift?
 ##Output a JSON object with this exact structure:
 {
 
-"job_title": "string",
+"job_profile_name": "string",
 
 "analysis_date": "string",
 
@@ -146,12 +137,21 @@ paradigm_shift | partial_automation",
 
 Rules:
 
-- Only analyse skills present in the current profile
+- skill_name must be a concise, standalone skill label (1–4 words). Do NOT
 
-(skills_list, capabilities, task-skill mapping)
-- Return 5–10 skills — do not force a long list if decline signals
+copy task descriptions. Extract the core skill, e.g. "Technical Documentation"
 
-are not present
+not "Documentation, specifications — developing and overseeing
+
+complete system and general documentation frameworks"
+
+- Only analyse skills present in the provided job description — do not return
+
+unrelated skills or hallucinate decline signals not grounded in the JD
+
+- Return only skills where genuine decline signals are present; do not pad
+
+the list with skills that are stable or thriving
 
 - still_required_today = true means the skill is declining but still
 

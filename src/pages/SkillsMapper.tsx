@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,19 +14,24 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Info, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus, ShieldCheck, AlertTriangle, XCircle } from "lucide-react";
+import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus } from "lucide-react";
 import { toast } from "sonner";
+import { useEffect } from "react";
+
+// ── Model constants ───────────────────────────────────────────────────────────
+
+type ModelId = "azure-gpt-4o" | "azure-gpt-5.3" | "azure-oss-120b" | "claude-sonnet-4-6";
+
+const MODEL_LABELS: Record<ModelId, string> = {
+  "azure-gpt-4o":     "GPT-4o",
+  "azure-gpt-5.3":    "GPT-5.3",
+  "azure-oss-120b":   "OSS 120B",
+  "claude-sonnet-4-6":"Claude Sonnet",
+};
+
+const DEFAULT_MULTI_MODELS: ModelId[] = ["azure-gpt-4o", "azure-gpt-5.3", "azure-oss-120b"];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface ValidationResult {
-  name: string;
-  verdict: "skill" | "knowledge" | "competency" | "experience" | "too_vague";
-  reason: string;
-  suggested: string | null;
-}
-
-type ValidationMap = Record<string, ValidationResult>; // keyed by skill_name
 
 interface Task { name: string; proficiency: string; }
 interface Competency { name: string; description: string; }
@@ -49,7 +54,7 @@ interface EmergingSkill {
   time_horizon: string;
   demand_signal: string;
   reasoning: string;
-  profile_gap: "absent" | "adjacent" | "present-but-evolving";
+  profile_gap?: "absent" | "adjacent" | "present-but-evolving";
   co_emerging_skills: string[];
 }
 
@@ -68,21 +73,62 @@ interface DiminishingSkill {
   };
 }
 
-interface AnalysisRecord {
+interface ModelRun {
+  emerging: { job_profile_name?: string; job_title?: string; analysis_date?: string; emerging_skills?: EmergingSkill[] };
+  diminishing: { job_profile_name?: string; job_title?: string; analysis_date?: string; diminishing_skills?: DiminishingSkill[]; [key: string]: any };
+  analyzedAt: string;
+  warnings?: string[];
+}
+
+interface MultiModelRecord {
   profileId: string;
   profile: JobProfile | null;
   orgName: string;
   industry: string;
   department: string;
+  runs: Partial<Record<ModelId, ModelRun>>;
+  warnings?: string[];
+}
+
+interface ReportEntry {
+  profileId: string;
+  modelId: ModelId;
+  profile: JobProfile | null;
+  orgName: string;
+  industry: string;
+  department: string;
+  emerging: ModelRun["emerging"];
+  diminishing: ModelRun["diminishing"];
   analyzedAt: string;
-  emerging: { job_title?: string; analysis_date?: string; emerging_skills?: EmergingSkill[] };
-  diminishing: { job_title?: string; analysis_date?: string; diminishing_skills?: DiminishingSkill[]; [key: string]: any };
+}
+
+// ── Normalization ─────────────────────────────────────────────────────────────
+
+function normalizeRecord(record: any): MultiModelRecord {
+  if (record.runs) return record as MultiModelRecord;
+  const run: any = { analyzedAt: record.analyzedAt };
+  if (record.emerging)    run.emerging    = record.emerging;
+  if (record.diminishing) run.diminishing = record.diminishing;
+  if (record.warnings)    run.warnings    = record.warnings;
+  return {
+    profileId:  record.profileId,
+    profile:    record.profile ?? null,
+    orgName:    record.orgName ?? "",
+    industry:   record.industry ?? "",
+    department: record.department ?? "",
+    runs: { "claude-sonnet-4-6": run },
+  };
+}
+
+function getRecordDate(r: MultiModelRecord): number {
+  const dates = Object.values(r.runs).map(run => new Date((run as ModelRun).analyzedAt).getTime());
+  return dates.length ? Math.max(...dates) : 0;
 }
 
 // ── Style helpers ─────────────────────────────────────────────────────────────
 
 const confidenceStyle = (c?: string) => {
-  if (c === "high") return "bg-green-100 text-green-800";
+  if (c === "high")   return "bg-green-100 text-green-800";
   if (c === "medium") return "bg-yellow-100 text-yellow-800";
   return "bg-orange-100 text-orange-800";
 };
@@ -95,30 +141,39 @@ const horizonStyle = (h?: string) => {
 };
 
 const gapStyle = (g?: string) => {
-  if (g === "absent") return "bg-red-100 text-red-800";
-  if (g === "adjacent") return "bg-yellow-100 text-yellow-800";
+  if (g === "absent")               return "bg-red-100 text-red-800";
+  if (g === "adjacent")             return "bg-yellow-100 text-yellow-800";
   if (g === "present-but-evolving") return "bg-purple-100 text-purple-800";
   return "bg-muted text-muted-foreground";
 };
 
 const categoryBadge = (cat?: string) => {
   const map: Record<string, string> = {
-    "Technical": "bg-blue-100 text-blue-800",
-    "Methodology": "bg-indigo-100 text-indigo-800",
-    "Tool": "bg-cyan-100 text-cyan-800",
-    "Domain Knowledge": "bg-emerald-100 text-emerald-800",
-    "Soft Skill": "bg-pink-100 text-pink-800",
+    "Technical":       "bg-blue-100 text-blue-800",
+    "Methodology":     "bg-indigo-100 text-indigo-800",
+    "Tool":            "bg-cyan-100 text-cyan-800",
+    "Domain Knowledge":"bg-emerald-100 text-emerald-800",
+    "Soft Skill":      "bg-pink-100 text-pink-800",
   };
   return (cat && map[cat]) ?? "bg-muted text-muted-foreground";
 };
 
-const gapTooltip: Record<string, string> = {
-  absent: "Not in the current profile at all — a new skill to build",
-  adjacent: "Natural extension of an existing skill — easier to develop",
-  "present-but-evolving": "On the profile but changing form significantly",
+const declineReasonLabel: Record<string, string> = {
+  ai_automation:       "AI Automation",
+  tool_supersession:   "Tool Superseded",
+  commoditization:     "Commoditized",
+  legacy_phase_out:    "Legacy Phase-out",
+  process_elimination: "Process Eliminated",
 };
 
-// ── Profile-to-input helpers ──────────────────────────────────────────────────
+const declineHorizonStyle = (h?: string) => {
+  if (!h) return "bg-muted text-muted-foreground";
+  if (h === "already declining") return "bg-red-100 text-red-800 border border-red-200";
+  if (h.startsWith("6")) return "bg-amber-50 text-amber-700 border border-amber-200";
+  return "bg-blue-50 text-blue-700 border border-blue-200";
+};
+
+// ── Profile helpers ───────────────────────────────────────────────────────────
 
 function profileToJdText(p: JobProfile): string {
   const lines: string[] = [];
@@ -132,37 +187,15 @@ function profileToTasks(p: JobProfile): string[] {
   return p.tasks.map((t) => (t.proficiency ? `${t.name} - ${t.proficiency}` : t.name));
 }
 
-// ── Validation helpers ────────────────────────────────────────────────────────
+// ── Skill row components ──────────────────────────────────────────────────────
 
-function verdictIcon(v?: ValidationResult["verdict"]) {
-  if (!v) return null;
-  if (v === "skill") return <ShieldCheck className="h-3 w-3 text-green-600 shrink-0" />;
-  if (v === "knowledge" || v === "competency") return <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />;
-  return <XCircle className="h-3 w-3 text-red-500 shrink-0" />;
-}
-
-function verdictLabel(v: ValidationResult["verdict"]) {
-  const map: Record<string, string> = {
-    skill: "Valid skill",
-    knowledge: "Knowledge area — not a skill",
-    competency: "Behavioural competency — not a discrete skill",
-    experience: "Experience descriptor — not a skill",
-    too_vague: "Too vague to be actionable",
-  };
-  return map[v] ?? v;
-}
-
-// ── Compact skill row (name + category only) ──────────────────────────────────
-
-function EmergingSkillRow({ skill, rank, validation }: { skill: EmergingSkill; rank: number; validation?: ValidationResult }) {
-  const isInvalid = validation && validation.verdict !== "skill";
+function EmergingSkillRow({ skill, rank }: { skill: EmergingSkill; rank: number }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors ${isInvalid ? "hover:bg-amber-50 opacity-70" : "hover:bg-green-50"}`}>
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors hover:bg-green-50">
           <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
-          <span className={`text-[11px] font-medium flex-1 ${isInvalid ? "text-muted-foreground line-through decoration-amber-400" : "text-foreground"}`}>{skill.skill_name}</span>
-          {validation && verdictIcon(validation.verdict)}
+          <span className="text-[11px] font-medium flex-1 text-foreground">{skill.skill_name}</span>
           {skill.category && (
             <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
@@ -170,22 +203,14 @@ function EmergingSkillRow({ skill, rank, validation }: { skill: EmergingSkill; r
           )}
         </div>
       </TooltipTrigger>
-      <TooltipContent side="right" className="max-w-[300px] space-y-1.5 p-3">
+      <TooltipContent side="right" className="max-w-[280px] space-y-1.5 p-3">
         <p className="text-xs font-semibold">{skill.skill_name}</p>
-        {validation && (
-          <div className={`flex items-center gap-1.5 text-[10px] font-medium rounded px-1.5 py-1 ${validation.verdict === "skill" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
-            {verdictIcon(validation.verdict)}
-            {verdictLabel(validation.verdict)}
-          </div>
-        )}
-        {validation?.suggested && (
-          <p className="text-[10px] text-blue-700 italic">Suggested: "{validation.suggested}"</p>
-        )}
-        {validation?.reason && <p className="text-[10px] text-muted-foreground">{validation.reason}</p>}
         <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${horizonStyle(skill.time_horizon)}`}>{skill.time_horizon}</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${gapStyle(skill.profile_gap)}`}>{skill.profile_gap}</span>
+          {skill.profile_gap && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${gapStyle(skill.profile_gap)}`}>{skill.profile_gap}</span>
+          )}
         </div>
         {skill.demand_signal && <p className="text-[10px] text-muted-foreground">{skill.demand_signal}</p>}
         <p className="text-[10px] leading-relaxed">{skill.reasoning}</p>
@@ -197,38 +222,13 @@ function EmergingSkillRow({ skill, rank, validation }: { skill: EmergingSkill; r
   );
 }
 
-const declineReasonLabel: Record<string, string> = {
-  ai_automation: "AI Automation",
-  tool_supersession: "Tool Superseded",
-  commoditization: "Commoditized",
-  legacy_phase_out: "Legacy Phase-out",
-  process_elimination: "Process Eliminated",
-};
-
-const declineHorizonStyle = (h?: string) => {
-  if (!h) return "bg-muted text-muted-foreground";
-  if (h === "already declining") return "bg-red-100 text-red-800 border border-red-200";
-  if (h.startsWith("6")) return "bg-amber-50 text-amber-700 border border-amber-200";
-  return "bg-blue-50 text-blue-700 border border-blue-200";
-};
-
-const relationshipStyle = (r?: string) => {
-  if (r === "direct_swap") return "bg-orange-100 text-orange-800";
-  if (r === "capability_upgrade") return "bg-blue-100 text-blue-800";
-  if (r === "paradigm_shift") return "bg-purple-100 text-purple-800";
-  if (r === "partial_automation") return "bg-yellow-100 text-yellow-800";
-  return "bg-muted text-muted-foreground";
-};
-
-function DiminishingSkillRow({ skill, rank, validation }: { skill: DiminishingSkill; rank: number; validation?: ValidationResult }) {
-  const isInvalid = validation && validation.verdict !== "skill";
+function DiminishingSkillRow({ skill, rank }: { skill: DiminishingSkill; rank: number }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors ${isInvalid ? "hover:bg-amber-50 opacity-70" : "hover:bg-red-50"}`}>
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded cursor-default transition-colors hover:bg-red-50">
           <span className="text-[10px] font-bold text-muted-foreground w-4 shrink-0">#{rank}</span>
-          <span className={`text-[11px] font-medium flex-1 ${isInvalid ? "text-muted-foreground line-through decoration-amber-400" : "text-foreground"}`}>{skill.skill_name}</span>
-          {validation && verdictIcon(validation.verdict)}
+          <span className="text-[11px] font-medium flex-1 text-foreground">{skill.skill_name}</span>
           {skill.category && (
             <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${categoryBadge(skill.category)}`}>
               {skill.category}
@@ -236,18 +236,8 @@ function DiminishingSkillRow({ skill, rank, validation }: { skill: DiminishingSk
           )}
         </div>
       </TooltipTrigger>
-      <TooltipContent side="left" className="max-w-[300px] space-y-1.5 p-3">
+      <TooltipContent side="left" className="max-w-[280px] space-y-1.5 p-3">
         <p className="text-xs font-semibold">{skill.skill_name}</p>
-        {validation && (
-          <div className={`flex items-center gap-1.5 text-[10px] font-medium rounded px-1.5 py-1 ${validation.verdict === "skill" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
-            {verdictIcon(validation.verdict)}
-            {verdictLabel(validation.verdict)}
-          </div>
-        )}
-        {validation?.suggested && (
-          <p className="text-[10px] text-blue-700 italic">Suggested: "{validation.suggested}"</p>
-        )}
-        {validation?.reason && <p className="text-[10px] text-muted-foreground">{validation.reason}</p>}
         <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
           {skill.confidence && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confidenceStyle(skill.confidence)}`}>{skill.confidence}</span>}
           {skill.decline_horizon && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${declineHorizonStyle(skill.decline_horizon)}`}>{skill.decline_horizon}</span>}
@@ -270,99 +260,106 @@ function DiminishingSkillRow({ skill, rank, validation }: { skill: DiminishingSk
   );
 }
 
-// ── Full analysis result card (used in both live + saved views) ───────────────
+// ── Single model column ───────────────────────────────────────────────────────
 
-function AnalysisCard({
+function ModelRunColumn({
+  modelId,
+  run,
+  isReference,
+  onSetReference,
+  showReferencePicker,
+}: {
+  modelId: ModelId;
+  run: ModelRun;
+  isReference?: boolean;
+  onSetReference?: () => void;
+  showReferencePicker?: boolean;
+}) {
+  const emerging: EmergingSkill[] = run.emerging?.emerging_skills ?? [];
+  const diminishing: DiminishingSkill[] = run.diminishing?.diminishing_skills ?? run.diminishing?.skills ?? [];
+
+  return (
+    <div className={`flex flex-col gap-3 rounded-lg border p-3 ${isReference ? "border-blue-300 bg-blue-50/20" : "border-border bg-card"}`}>
+      {/* Column header */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-foreground">{MODEL_LABELS[modelId]}</span>
+          {run.warnings?.length ? (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">
+              {run.warnings.length}⚠
+            </span>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-800 font-medium">{emerging.length}↑</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-medium">{diminishing.length}↓</span>
+        </div>
+      </div>
+
+      {/* Emerging */}
+      <div>
+        <div className="flex items-center gap-1 mb-1">
+          <TrendingUp className="h-3 w-3 text-green-600" />
+          <p className="text-[11px] font-semibold text-foreground">Emerging</p>
+        </div>
+        <div className="space-y-0.5">
+          {emerging.length === 0
+            ? <p className="text-[10px] text-muted-foreground italic px-2">No data.</p>
+            : emerging.map((s, i) => <EmergingSkillRow key={i} skill={s} rank={i + 1} />)}
+        </div>
+      </div>
+
+      {/* Diminishing */}
+      <div>
+        <div className="flex items-center gap-1 mb-1">
+          <TrendingDown className="h-3 w-3 text-red-500" />
+          <p className="text-[11px] font-semibold text-foreground">Diminishing</p>
+        </div>
+        <div className="space-y-0.5">
+          {diminishing.length === 0
+            ? <p className="text-[10px] text-muted-foreground italic px-2">No data.</p>
+            : diminishing.map((s, i) => <DiminishingSkillRow key={i} skill={s} rank={i + 1} />)}
+        </div>
+      </div>
+
+      {/* Reference selector */}
+      {showReferencePicker && (
+        <button
+          onClick={onSetReference}
+          className={`mt-auto w-full text-[10px] py-1 rounded border transition-colors ${
+            isReference
+              ? "bg-blue-100 border-blue-300 text-blue-700 font-semibold"
+              : "border-border text-muted-foreground hover:bg-muted"
+          }`}
+        >
+          {isReference ? "✓ Use for Report" : "Use for Report"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Multi-model result grid ───────────────────────────────────────────────────
+
+function MultiModelResultGrid({
   record,
   onDelete,
   onAddToReport,
   addingToReport,
 }: {
-  record: AnalysisRecord;
+  record: MultiModelRecord;
   onDelete?: () => void;
-  onAddToReport?: (correctedRecord: AnalysisRecord) => void;
+  onAddToReport?: (run: ModelRun, modelId: ModelId) => void;
   addingToReport?: boolean;
 }) {
-  const [validating, setValidating] = useState(false);
-  const [validationMap, setValidationMap] = useState<ValidationMap>({});
-
-  const emerging = record.emerging?.emerging_skills ?? [];
-  const diminishing: DiminishingSkill[] = (
-    record.diminishing?.diminishing_skills ??
-    record.diminishing?.skills ??
-    (Array.isArray(record.diminishing) ? record.diminishing : [])
+  const runEntries = Object.entries(record.runs) as [ModelId, ModelRun][];
+  const [referenceModelId, setReferenceModelId] = useState<ModelId>(
+    runEntries[0]?.[0] ?? "azure-gpt-4o"
   );
 
-  // Run validation automatically when the card mounts
-  useEffect(() => {
-    if (emerging.length > 0 || diminishing.length > 0) runValidation();
-  }, [record.profileId]);
-
-  const runValidation = async (): Promise<ValidationMap> => {
-    setValidating(true);
-    try {
-      const res = await fetch("/api/validate-skills", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emerging,
-          diminishing,
-          jobTitle: record.profile?.title ?? record.emerging?.job_title ?? "",
-          industry: record.industry ?? "",
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Validation failed.");
-      const map: ValidationMap = {};
-      (data.results ?? []).forEach((r: ValidationResult) => { map[r.name] = r; });
-      setValidationMap(map);
-      const invalid = (data.results ?? []).filter((r: ValidationResult) => r.verdict !== "skill").length;
-      if (invalid === 0) toast.success("All items validated as genuine skills.");
-      else toast.warning(`${invalid} item${invalid > 1 ? "s" : ""} flagged — hover skills for details.`);
-      return map;
-    } catch (err: any) {
-      toast.error(err.message || "Validation failed.");
-      return {};
-    } finally {
-      setValidating(false);
-    }
-  };
-
-  // Build corrected record: rename flagged skills with suggestions, drop unfixable ones
-  const buildCorrectedRecord = (map: ValidationMap): AnalysisRecord => {
-    const correct = <T extends { skill_name: string }>(skills: T[]): T[] =>
-      skills
-        .filter(s => {
-          const v = map[s.skill_name];
-          return !v || v.verdict === "skill" || v.suggested !== null;
-        })
-        .map(s => {
-          const v = map[s.skill_name];
-          return v && v.verdict !== "skill" && v.suggested
-            ? { ...s, skill_name: v.suggested }
-            : s;
-        });
-
-    return {
-      ...record,
-      emerging:    { ...record.emerging,    emerging_skills:    correct(emerging) },
-      diminishing: { ...record.diminishing, diminishing_skills: correct(diminishing) },
-    };
-  };
-
-  const handleAddToReportClick = async () => {
-    let map = validationMap;
-    if (Object.keys(map).length === 0) {
-      map = await runValidation();
-    }
-    onAddToReport?.(buildCorrectedRecord(map));
-  };
-
-  const validatedCount = Object.values(validationMap).filter(v => v.verdict === "skill").length;
-  const flaggedCount   = Object.values(validationMap).filter(v => v.verdict !== "skill").length;
-
-  const analyzedDate = record.analyzedAt
-    ? new Date(record.analyzedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+  const refRun = record.runs[referenceModelId];
+  const analyzedDate = refRun?.analyzedAt
+    ? new Date(refRun.analyzedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
     : "";
 
   return (
@@ -371,7 +368,7 @@ function AnalysisCard({
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
             <CardTitle className="text-base">
-              {record.profile?.title ?? record.emerging?.job_title ?? "Analysis"}
+              {record.profile?.title ?? "Analysis"}
             </CardTitle>
             <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
               {record.industry && <span>{record.industry}</span>}
@@ -381,21 +378,22 @@ function AnalysisCard({
                   <span className="flex items-center gap-0.5"><Clock className="h-3 w-3" />{analyzedDate}</span>
                 </>
               )}
+              <span className="flex items-center gap-0.5 font-medium text-primary">
+                <BrainCircuit className="h-3 w-3" />{runEntries.length} model{runEntries.length !== 1 ? "s" : ""}
+              </span>
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {onAddToReport && (
+            {onAddToReport && refRun && (
               <Button
                 size="sm"
                 variant="outline"
                 className="h-7 text-[11px] gap-1.5 border-green-300 text-green-700 hover:bg-green-50"
-                onClick={handleAddToReportClick}
-                disabled={addingToReport || validating}
+                onClick={() => onAddToReport(refRun, referenceModelId)}
+                disabled={addingToReport}
               >
-                {addingToReport || validating
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <Plus className="h-3 w-3" />}
-                {validating ? "Validating…" : "Add to Report"}
+                {addingToReport ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                Add to Report ({MODEL_LABELS[referenceModelId]})
               </Button>
             )}
             {onDelete && (
@@ -409,169 +407,170 @@ function AnalysisCard({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-medium">
-            {emerging.length} emerging
-          </span>
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-medium">
-            {diminishing.length} diminishing
-          </span>
-          {flaggedCount > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium flex items-center gap-1">
-              <AlertTriangle className="h-2.5 w-2.5" />{flaggedCount} flagged
-            </span>
-          )}
-          {validatedCount > 0 && flaggedCount === 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium flex items-center gap-1">
-              <ShieldCheck className="h-2.5 w-2.5" />all valid
-            </span>
-          )}
-          <span className="text-[10px] text-muted-foreground ml-1">hover a skill for details</span>
-        </div>
+        <p className="text-[10px] text-muted-foreground pt-1">
+          Hover a skill for details · click "Use for Report" on a column to select it for export
+        </p>
       </CardHeader>
 
       <CardContent>
-        <div className="grid grid-cols-2 gap-4">
-          {/* Emerging */}
-          <div className="space-y-1">
-            <div className="flex items-center gap-1.5 mb-2">
-              <TrendingUp className="h-3.5 w-3.5 text-green-600" />
-              <p className="text-xs font-semibold text-foreground">Emerging Skills</p>
-            </div>
-            {emerging.length === 0
-              ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
-              : emerging.map((s, i) => <EmergingSkillRow key={i} skill={s} rank={i + 1} validation={validationMap[s.skill_name]} />)
-            }
-          </div>
-
-          {/* Diminishing */}
-          <div className="space-y-1">
-            <div className="flex items-center gap-1.5 mb-2">
-              <TrendingDown className="h-3.5 w-3.5 text-red-500" />
-              <p className="text-xs font-semibold text-foreground">Diminishing Skills</p>
-            </div>
-            {diminishing.length === 0
-              ? <p className="text-[11px] text-muted-foreground italic px-2">No data.</p>
-              : diminishing.map((s, i) => <DiminishingSkillRow key={i} skill={s} rank={i + 1} validation={validationMap[s.skill_name]} />)
-            }
-          </div>
+        <div
+          className="grid gap-3"
+          style={{ gridTemplateColumns: `repeat(${runEntries.length}, minmax(0, 1fr))` }}
+        >
+          {runEntries.map(([modelId, run]) => (
+            <ModelRunColumn
+              key={modelId}
+              modelId={modelId}
+              run={run}
+              isReference={referenceModelId === modelId}
+              onSetReference={() => setReferenceModelId(modelId)}
+              showReferencePicker={!!onAddToReport}
+            />
+          ))}
         </div>
       </CardContent>
     </Card>
   );
 }
 
+// ── Model picker ──────────────────────────────────────────────────────────────
+
+function ModelPicker({
+  selected,
+  onChange,
+}: {
+  selected: ModelId[];
+  onChange: (ids: ModelId[]) => void;
+}) {
+  const allModels: ModelId[] = [...DEFAULT_MULTI_MODELS, "claude-sonnet-4-6"];
+
+  const toggle = (id: ModelId) => {
+    if (selected.includes(id)) {
+      if (selected.length === 1) return; // keep at least one
+      onChange(selected.filter(m => m !== id));
+    } else {
+      onChange([...selected, id]);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Label>Models to Compare</Label>
+      <div className="flex flex-wrap gap-2">
+        {allModels.map((id) => {
+          const isAzure = id !== "claude-sonnet-4-6";
+          const active = selected.includes(id);
+          return (
+            <button
+              key={id}
+              onClick={() => toggle(id)}
+              className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border font-medium transition-colors ${
+                active
+                  ? isAzure
+                    ? "bg-blue-600 border-blue-600 text-white"
+                    : "bg-violet-600 border-violet-600 text-white"
+                  : "bg-background border-border text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-white" : "bg-muted-foreground"}`} />
+              {MODEL_LABELS[id]}
+              {!isAzure && <span className="text-[10px] opacity-75">(opt-in)</span>}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        {selected.length} model{selected.length !== 1 ? "s" : ""} selected · same prompt sent to all
+      </p>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
+
+const LS_KEY             = "rolescope_results";
+const LS_REPORT_KEY      = "rolescope_report_entries";
 
 const SkillsMapper = () => {
   const location = useLocation();
   const incomingProfile = (location.state as { profile?: JobProfile } | null)?.profile;
 
-  const [profiles, setProfiles] = useState<JobProfile[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("");
+  const [profiles, setProfiles]               = useState<JobProfile[]>([]);
+  const [selectedId, setSelectedId]           = useState<string>("");
   const [selectedProfile, setSelectedProfile] = useState<JobProfile | null>(null);
-  const [jdText, setJdText] = useState("");
-  const [tasksText, setTasksText] = useState("");
-  const [orgName, setOrgName] = useState("");
-  const [industry, setIndustry] = useState("");
-  const [department, setDepartment] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [liveResult, setLiveResult] = useState<AnalysisRecord | null>(null);
-  const [savedResults, setSavedResults] = useState<AnalysisRecord[]>([]);
-  const [activeTab, setActiveTab] = useState("run");
-  const [confirmRecord, setConfirmRecord] = useState<AnalysisRecord | null>(null);
-  const [addingToReport, setAddingToReport] = useState<string | null>(null);
-  const [sheetExists, setSheetExists] = useState(false);
-  const [sheetRows, setSheetRows] = useState<any[]>([]);
+  const [jdText, setJdText]                   = useState("");
+  const [tasksText, setTasksText]             = useState("");
+  const [orgName, setOrgName]                 = useState("");
+  const [industry, setIndustry]               = useState("");
+  const [department, setDepartment]           = useState("");
+  const [selectedModels, setSelectedModels]   = useState<ModelId[]>([...DEFAULT_MULTI_MODELS]);
+  const [loading, setLoading]                 = useState(false);
+  const [liveResult, setLiveResult]           = useState<MultiModelRecord | null>(null);
+  const [savedResults, setSavedResults]       = useState<MultiModelRecord[]>([]);
+  const [activeTab, setActiveTab]             = useState("run");
+  const [addingToReport, setAddingToReport]   = useState<string | null>(null);
+  const [reportEntries, setReportEntries]     = useState<ReportEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem(LS_REPORT_KEY) || "[]"); } catch { return []; }
+  });
+  const [confirmEntry, setConfirmEntry]       = useState<{ record: MultiModelRecord; run: ModelRun; modelId: ModelId } | null>(null);
 
-  const loadSheetData = useCallback(() => {
-    fetch("/api/sheet-data").then(r => r.json()).then(d => { if (Array.isArray(d)) setSheetRows(d); }).catch(() => {});
-  }, []);
+  // ── Storage helpers ─────────────────────────────────────────────────────────
 
-  const LS_KEY = "rolescope_results";
-
-  // Read from localStorage (primary) merged with server results (seed)
   const loadSaved = useCallback(async () => {
-    // 1. Load from localStorage first (instant)
-    let local: Record<string, AnalysisRecord> = {};
+    let local: Record<string, any> = {};
     try { local = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch {}
-
-    // 2. Merge server results (seeds existing data; no-op on Vercel)
     try {
       const res = await fetch("/api/stored-results");
       const server = await res.json();
       if (server && typeof server === "object") {
-        const merged = { ...server, ...local }; // local wins on conflict
+        const merged = { ...server, ...local };
         localStorage.setItem(LS_KEY, JSON.stringify(merged));
         local = merged;
       }
     } catch {}
-
-    setSavedResults(Object.values(local).sort(
-      (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
-    ));
+    setSavedResults(
+      Object.values(local)
+        .map(normalizeRecord)
+        .sort((a, b) => getRecordDate(b) - getRecordDate(a))
+    );
   }, []);
 
-  const saveToLocal = useCallback((record: AnalysisRecord) => {
+  const saveToLocal = useCallback((record: MultiModelRecord) => {
     try {
-      const existing: Record<string, AnalysisRecord> =
-        JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      const existing: Record<string, any> = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       existing[record.profileId] = record;
       localStorage.setItem(LS_KEY, JSON.stringify(existing));
-      setSavedResults(Object.values(existing).sort(
-        (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
-      ));
+      setSavedResults(
+        Object.values(existing)
+          .map(normalizeRecord)
+          .sort((a, b) => getRecordDate(b) - getRecordDate(a))
+      );
     } catch {}
   }, []);
 
   const deleteFromLocal = useCallback((profileId: string) => {
     try {
-      const existing: Record<string, AnalysisRecord> =
-        JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      const existing: Record<string, any> = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       delete existing[profileId];
       localStorage.setItem(LS_KEY, JSON.stringify(existing));
-      setSavedResults(Object.values(existing).sort(
-        (a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime()
-      ));
+      setSavedResults(
+        Object.values(existing)
+          .map(normalizeRecord)
+          .sort((a, b) => getRecordDate(b) - getRecordDate(a))
+      );
     } catch {}
-    // best-effort server delete
     fetch(`/api/stored-results/${profileId}`, { method: "DELETE" }).catch(() => {});
   }, []);
 
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
+
   useEffect(() => {
     fetch("/api/job-profiles")
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setProfiles(data); })
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setProfiles(data); })
       .catch(() => {});
     loadSaved();
-    fetch("/api/sheet-status").then(r => r.json()).then(d => setSheetExists(d.exists)).catch(() => {});
-    loadSheetData();
   }, []);
-
-  const handleAddToReport = async (record: AnalysisRecord) => {
-    setAddingToReport(record.profileId);
-    try {
-      const res = await fetch("/api/export-to-sheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ record }),
-      });
-      if (!res.ok) throw new Error("Export failed.");
-      setSheetExists(true);
-      loadSheetData();
-      setActiveTab("report");
-      toast.success("Added to report — preview updated.");
-    } catch (err: any) {
-      toast.error(err.message || "Export failed.");
-    } finally {
-      setAddingToReport(null);
-      setConfirmRecord(null);
-    }
-  };
-
-  const handleDownloadSheet = () => {
-    window.open("/api/download-sheet", "_blank");
-  };
 
   useEffect(() => {
     if (incomingProfile) {
@@ -579,6 +578,8 @@ const SkillsMapper = () => {
       window.history.replaceState({}, "");
     }
   }, []);
+
+  // ── Profile ─────────────────────────────────────────────────────────────────
 
   const applyProfile = (p: JobProfile) => {
     setSelectedId(String(p.id));
@@ -590,37 +591,41 @@ const SkillsMapper = () => {
   };
 
   const handleProfileSelect = (val: string) => {
-    const p = profiles.find((x) => String(x.id) === val);
+    const p = profiles.find(x => String(x.id) === val);
     if (p) applyProfile(p);
   };
 
-  const handleRunBoth = async () => {
+  // ── Run ─────────────────────────────────────────────────────────────────────
+
+  const handleRunAnalysis = async () => {
     if (!jdText.trim()) { toast.error("Please provide a job description."); return; }
-    const tasks = tasksText.split("\n").map((t) => t.trim()).filter(Boolean);
+    const tasks = tasksText.split("\n").map(t => t.trim()).filter(Boolean);
     if (!tasks.length) { toast.error("Please provide at least one task."); return; }
+    if (!selectedModels.length) { toast.error("Select at least one model."); return; }
 
     setLoading(true);
     setLiveResult(null);
     try {
-      const res = await fetch("/api/full-analysis", {
+      const res = await fetch("/api/full-analysis-multi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jdText: jdText.trim(),
           tasks,
-          orgName: orgName.trim(),
-          industry: industry.trim(),
-          jobTitle: selectedProfile?.title || "",
+          orgName:    orgName.trim(),
+          industry:   industry.trim(),
+          jobTitle:   selectedProfile?.title || "",
           department: department.trim(),
-          profile: selectedProfile,
+          profile:    selectedProfile,
+          models:     selectedModels,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed.");
-      setLiveResult(data);
-      saveToLocal(data);
-      toast.success("Analysis complete — auto-saving to results…");
-      // Switch to Saved Results tab after 3 s
+      const record = normalizeRecord(data);
+      setLiveResult(record);
+      saveToLocal(record);
+      toast.success(`Analysis complete — ${selectedModels.length} model${selectedModels.length !== 1 ? "s" : ""} compared.`);
       setTimeout(() => setActiveTab("saved"), 3000);
     } catch (err: any) {
       toast.error(err.message || "Analysis failed.");
@@ -629,16 +634,105 @@ const SkillsMapper = () => {
     }
   };
 
+  // ── Report ──────────────────────────────────────────────────────────────────
+
+  const handleAddToReport = async (record: MultiModelRecord, run: ModelRun, modelId: ModelId) => {
+    setAddingToReport(record.profileId);
+    try {
+      const entry: ReportEntry = {
+        profileId:  record.profileId,
+        modelId,
+        profile:    record.profile,
+        orgName:    record.orgName,
+        industry:   record.industry,
+        department: record.department,
+        emerging:   run.emerging,
+        diminishing:run.diminishing,
+        analyzedAt: run.analyzedAt,
+      };
+      const next = [...reportEntries.filter(e => e.profileId !== record.profileId), entry];
+      setReportEntries(next);
+      localStorage.setItem(LS_REPORT_KEY, JSON.stringify(next));
+      // best-effort server export in old AnalysisRecord shape
+      fetch("/api/export-to-sheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          record: {
+            profileId:  record.profileId,
+            profile:    record.profile,
+            orgName:    record.orgName,
+            industry:   record.industry,
+            department: record.department,
+            analyzedAt: run.analyzedAt,
+            emerging:   run.emerging,
+            diminishing:run.diminishing,
+          },
+        }),
+      }).catch(() => {});
+      setActiveTab("report");
+      toast.success(`Added ${MODEL_LABELS[modelId]} output to report.`);
+    } finally {
+      setAddingToReport(null);
+      setConfirmEntry(null);
+    }
+  };
+
+  const handleDownloadSheet = async () => {
+    try {
+      const records = reportEntries.map(e => ({
+        profileId:  e.profileId,
+        profile:    e.profile,
+        orgName:    e.orgName,
+        industry:   e.industry,
+        department: e.department,
+        analyzedAt: e.analyzedAt,
+        emerging:   e.emerging,
+        diminishing:e.diminishing,
+      }));
+      const res = await fetch("/api/generate-sheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ records }),
+      });
+      if (!res.ok) throw new Error("Download failed.");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "skills-analysis-report.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast.error(err.message || "Download failed.");
+    }
+  };
+
   const handleDelete = (profileId: string) => {
     deleteFromLocal(profileId);
     toast.success("Result deleted.");
   };
 
-  const tasks = tasksText.split("\n").map((t) => t.trim()).filter(Boolean);
+  // ── Derived ─────────────────────────────────────────────────────────────────
+
+  const tasks = tasksText.split("\n").map(t => t.trim()).filter(Boolean);
+
+  const sheetRows = reportEntries.map((entry, idx) => ({
+    sno:        idx + 1,
+    role:       entry.profile?.title ?? "—",
+    date:       entry.analyzedAt
+      ? new Date(entry.analyzedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+      : "",
+    modelId:    entry.modelId,
+    emerging:   (entry.emerging?.emerging_skills ?? []).map(s => s.skill_name),
+    diminishing:(entry.diminishing?.diminishing_skills ?? []).map(s => s.skill_name),
+  }));
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <>
-    <AlertDialog open={!!confirmRecord} onOpenChange={(o) => { if (!o) setConfirmRecord(null); }}>
+    <AlertDialog open={!!confirmEntry} onOpenChange={o => { if (!o) setConfirmEntry(null); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
@@ -647,12 +741,12 @@ const SkillsMapper = () => {
           </AlertDialogTitle>
           <AlertDialogDescription className="space-y-1">
             <span className="block font-medium text-foreground">
-              {confirmRecord?.profile?.title ?? confirmRecord?.emerging?.job_title ?? "This analysis"}
+              {confirmEntry?.record.profile?.title ?? "This analysis"} — {confirmEntry?.modelId ? MODEL_LABELS[confirmEntry.modelId] : ""}
             </span>
             <span className="block text-sm">
-              Will be appended to <code className="text-xs bg-muted px-1 rounded">skills-analysis-report.xlsx</code> with{" "}
-              {(confirmRecord?.emerging?.emerging_skills ?? []).length} emerging and{" "}
-              {(confirmRecord?.diminishing?.diminishing_skills ?? confirmRecord?.diminishing?.skills ?? []).length} diminishing skills.
+              Will be added to the report with{" "}
+              {(confirmEntry?.run.emerging?.emerging_skills ?? []).length} emerging and{" "}
+              {(confirmEntry?.run.diminishing?.diminishing_skills ?? []).length} diminishing skills.
             </span>
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -660,19 +754,20 @@ const SkillsMapper = () => {
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className="bg-green-600 hover:bg-green-700"
-            onClick={() => confirmRecord && handleAddToReport(confirmRecord)}
+            onClick={() => confirmEntry && handleAddToReport(confirmEntry.record, confirmEntry.run, confirmEntry.modelId)}
           >
             Add to Report
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
     <div className="flex flex-col items-center px-6 py-10">
-      <div className="w-full max-w-5xl space-y-6">
+      <div className="w-full max-w-6xl space-y-6">
         <div className="space-y-1">
           <h1 className="text-3xl font-bold text-foreground">Skills Mapper</h1>
           <p className="text-muted-foreground text-sm">
-            Identify emerging and diminishing skills for any job profile. Results are saved automatically.
+            Compare emerging and diminishing skills across multiple AI models. Same prompt, same input — pick the best output.
           </p>
         </div>
 
@@ -693,9 +788,9 @@ const SkillsMapper = () => {
             <TabsTrigger value="report">
               <FileSpreadsheet className="mr-2 h-4 w-4" />
               Report
-              {sheetRows.length > 0 && (
+              {reportEntries.length > 0 && (
                 <span className="ml-1.5 text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded-full font-medium">
-                  {sheetRows.length}
+                  {reportEntries.length}
                 </span>
               )}
             </TabsTrigger>
@@ -717,7 +812,7 @@ const SkillsMapper = () => {
                         <SelectValue placeholder="Choose a job profile…" />
                       </SelectTrigger>
                       <SelectContent>
-                        {profiles.map((p) => (
+                        {profiles.map(p => (
                           <SelectItem key={p.id} value={String(p.id)}>{p.title}</SelectItem>
                         ))}
                       </SelectContent>
@@ -728,15 +823,15 @@ const SkillsMapper = () => {
                 <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="org">Organisation</Label>
-                    <Input id="org" placeholder="e.g. Acme Bank" value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+                    <Input id="org" placeholder="e.g. Acme Bank" value={orgName} onChange={e => setOrgName(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="industry">Industry</Label>
-                    <Input id="industry" placeholder="e.g. Banking" value={industry} onChange={(e) => setIndustry(e.target.value)} />
+                    <Input id="industry" placeholder="e.g. Banking" value={industry} onChange={e => setIndustry(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="dept">Department</Label>
-                    <Input id="dept" placeholder="e.g. IT and Digitalization" value={department} onChange={(e) => setDepartment(e.target.value)} />
+                    <Input id="dept" placeholder="e.g. IT and Digitalization" value={department} onChange={e => setDepartment(e.target.value)} />
                   </div>
                 </div>
 
@@ -747,7 +842,7 @@ const SkillsMapper = () => {
                     placeholder="Paste job description or purpose here…"
                     className="min-h-[100px] font-mono text-xs"
                     value={jdText}
-                    onChange={(e) => setJdText(e.target.value)}
+                    onChange={e => setJdText(e.target.value)}
                   />
                 </div>
 
@@ -758,29 +853,32 @@ const SkillsMapper = () => {
                     placeholder="Development Planning Support - Performs Independently&#10;Bug Fixing and Problem Investigation - Performs Independently"
                     className="min-h-[100px] font-mono text-xs"
                     value={tasksText}
-                    onChange={(e) => setTasksText(e.target.value)}
+                    onChange={e => setTasksText(e.target.value)}
                   />
                   {tasks.length > 0 && (
                     <p className="text-xs text-muted-foreground">{tasks.length} task{tasks.length !== 1 ? "s" : ""} detected</p>
                   )}
                 </div>
 
+                {/* Model picker */}
+                <ModelPicker selected={selectedModels} onChange={setSelectedModels} />
+
                 <Button
                   className="w-full"
-                  onClick={handleRunBoth}
-                  disabled={loading || !jdText.trim() || tasks.length === 0}
+                  onClick={handleRunAnalysis}
+                  disabled={loading || !jdText.trim() || tasks.length === 0 || selectedModels.length === 0}
                 >
                   {loading
-                    ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Running both pipelines in parallel…</>
-                    : <><BrainCircuit className="mr-2 h-4 w-4" />Run Emerging + Diminishing Analysis</>}
+                    ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Running {selectedModels.length} model{selectedModels.length !== 1 ? "s" : ""} in parallel…</>
+                    : <><BrainCircuit className="mr-2 h-4 w-4" />Run Emerging + Diminishing on {selectedModels.length} Model{selectedModels.length !== 1 ? "s" : ""}</>}
                 </Button>
               </CardContent>
             </Card>
 
             {liveResult && (
-              <AnalysisCard
+              <MultiModelResultGrid
                 record={liveResult}
-                onAddToReport={(corrected) => setConfirmRecord(corrected)}
+                onAddToReport={(run, modelId) => setConfirmEntry({ record: liveResult, run, modelId })}
                 addingToReport={addingToReport === liveResult.profileId}
               />
             )}
@@ -800,29 +898,27 @@ const SkillsMapper = () => {
                   <p className="text-sm text-muted-foreground">
                     {savedResults.length} profile{savedResults.length !== 1 ? "s" : ""} analysed
                   </p>
-                  {sheetExists && (
+                  {reportEntries.length > 0 && (
                     <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={handleDownloadSheet}>
-                      <Download className="h-3.5 w-3.5" />
-                      Download Report
+                      <Download className="h-3.5 w-3.5" />Download Report
                     </Button>
                   )}
                 </div>
                 <div className="space-y-4">
-                  {[...savedResults]
-                    .sort((a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime())
-                    .map((r) => (
-                      <AnalysisCard
-                        key={r.profileId}
-                        record={r}
-                        onDelete={() => handleDelete(r.profileId)}
-                        onAddToReport={(corrected) => setConfirmRecord(corrected)}
-                        addingToReport={addingToReport === r.profileId}
-                      />
-                    ))}
+                  {savedResults.map(r => (
+                    <MultiModelResultGrid
+                      key={r.profileId}
+                      record={r}
+                      onDelete={() => handleDelete(r.profileId)}
+                      onAddToReport={(run, modelId) => setConfirmEntry({ record: r, run, modelId })}
+                      addingToReport={addingToReport === r.profileId}
+                    />
+                  ))}
                 </div>
               </>
             )}
           </TabsContent>
+
           {/* ── Report Preview tab ── */}
           <TabsContent value="report" className="mt-4">
             <Card>
@@ -834,10 +930,11 @@ const SkillsMapper = () => {
                       Skills Analysis Report
                     </CardTitle>
                     <CardDescription className="text-xs mt-0.5">
-                      Saved to <code className="bg-muted px-1 rounded">data/skills-analysis-report.xlsx</code> · {sheetRows.length} role{sheetRows.length !== 1 ? "s" : ""} added
+                      {sheetRows.length} role{sheetRows.length !== 1 ? "s" : ""} added · downloads as{" "}
+                      <code className="bg-muted px-1 rounded">skills-analysis-report.xlsx</code>
                     </CardDescription>
                   </div>
-                  {sheetExists && (
+                  {sheetRows.length > 0 && (
                     <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={handleDownloadSheet}>
                       <Download className="h-3.5 w-3.5" />Download XLSX
                     </Button>
@@ -856,6 +953,7 @@ const SkillsMapper = () => {
                         <tr className="bg-[#1F3864] text-white">
                           <th className="px-3 py-2 text-left font-semibold w-8">#</th>
                           <th className="px-3 py-2 text-left font-semibold w-40">Role</th>
+                          <th className="px-3 py-2 text-left font-semibold w-24">Model</th>
                           <th className="px-3 py-2 text-left font-semibold text-green-300">Emerging Skills ▲</th>
                           <th className="px-3 py-2 text-left font-semibold text-red-300">Diminishing Skills ▼</th>
                           <th className="px-3 py-2 text-left font-semibold w-24">Date</th>
@@ -870,6 +968,11 @@ const SkillsMapper = () => {
                                 <>
                                   <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 text-muted-foreground align-middle text-center font-medium">{row.sno}</td>
                                   <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 font-medium align-middle">{row.role}</td>
+                                  <td rowSpan={maxLen} className="px-3 py-1.5 border border-gray-200 align-middle">
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-medium">
+                                      {MODEL_LABELS[row.modelId] ?? row.modelId}
+                                    </span>
+                                  </td>
                                 </>
                               )}
                               <td className="px-3 py-1.5 border border-gray-200 text-green-800 bg-green-50">
