@@ -1,5 +1,4 @@
 import { useState, useCallback } from "react";
-import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -7,14 +6,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus } from "lucide-react";
+import { Loader2, BrainCircuit, TrendingUp, TrendingDown, Trash2, Clock, BookMarked, FileSpreadsheet, Download, Plus, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect } from "react";
 
@@ -86,8 +84,46 @@ interface MultiModelRecord {
   orgName: string;
   industry: string;
   department: string;
+  jdText?: string;
   runs: Partial<Record<ModelId, ModelRun>>;
   warnings?: string[];
+}
+
+interface EvaluationFlaggedSkill {
+  skill_name: string;
+  side: "emerging" | "diminishing";
+  issue: string;
+  note: string;
+}
+
+interface EvaluationModelResult {
+  model_id: string;
+  model_label: string;
+  emerging_score: number;
+  diminishing_score: number;
+  overall_score: number;
+  strengths: string;
+  weaknesses: string;
+  flagged_skills: EvaluationFlaggedSkill[];
+}
+
+interface EvaluationConsensusSkill {
+  skill_name: string;
+  agreed_by: string[];
+  recommendation: "include" | "review" | "exclude";
+}
+
+interface EvaluationResult {
+  job_profile_name?: string;
+  evaluation_date?: string;
+  model_evaluations: EvaluationModelResult[];
+  consensus: {
+    emerging: EvaluationConsensusSkill[];
+    diminishing: EvaluationConsensusSkill[];
+  };
+  recommended_model: string;
+  recommended_model_rationale: string;
+  overall_assessment: string;
 }
 
 interface ReportEntry {
@@ -116,6 +152,7 @@ function normalizeRecord(record: any): MultiModelRecord {
     orgName:    record.orgName ?? "",
     industry:   record.industry ?? "",
     department: record.department ?? "",
+    jdText:     record.jdText ?? "",
     runs: { "claude-sonnet-4-6": run },
   };
 }
@@ -339,6 +376,116 @@ function ModelRunColumn({
   );
 }
 
+// ── Evaluation panel ─────────────────────────────────────────────────────────
+
+function EvaluationPanel({ evaluation }: { evaluation: EvaluationResult }) {
+  const scoreColor = (s: number) =>
+    s >= 8 ? "text-green-700 font-semibold" : s >= 6 ? "text-amber-600" : "text-red-600";
+
+  const recStyle = (r: string) =>
+    r === "include" ? "bg-green-50 border-green-200 text-green-700"
+    : r === "exclude" ? "bg-red-50 border-red-200 text-red-600"
+    : "bg-amber-50 border-amber-200 text-amber-700";
+
+  const consensusEmerging   = (evaluation.consensus?.emerging   ?? []).filter(c => c.agreed_by?.length > 1);
+  const consensusDiminishing = (evaluation.consensus?.diminishing ?? []).filter(c => c.agreed_by?.length > 1);
+  const allFlags = (evaluation.model_evaluations ?? []).flatMap(me =>
+    (me.flagged_skills ?? []).map(f => ({ ...f, model_label: me.model_label }))
+  );
+
+  return (
+    <div className="mt-4 border-t pt-4 space-y-4">
+      <div className="flex items-center gap-1.5">
+        <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+        <p className="text-xs font-semibold text-violet-700">Claude Sonnet Evaluation</p>
+      </div>
+
+      {evaluation.overall_assessment && (
+        <p className="text-[11px] text-muted-foreground leading-relaxed bg-violet-50 border border-violet-100 rounded p-2">
+          {evaluation.overall_assessment}
+        </p>
+      )}
+
+      <div
+        className="grid gap-2"
+        style={{ gridTemplateColumns: `repeat(${Math.min(evaluation.model_evaluations?.length ?? 1, 4)}, minmax(0, 1fr))` }}
+      >
+        {(evaluation.model_evaluations ?? []).map(me => (
+          <div
+            key={me.model_id}
+            className={`rounded border p-2 space-y-1.5 ${me.model_id === evaluation.recommended_model ? "border-violet-300 bg-violet-50/50" : "border-border bg-muted/20"}`}
+          >
+            <div className="flex items-center justify-between gap-1 flex-wrap">
+              <p className="text-[10px] font-semibold">{me.model_label}</p>
+              {me.model_id === evaluation.recommended_model && (
+                <span className="text-[9px] px-1 py-0.5 rounded bg-violet-100 text-violet-700 font-medium whitespace-nowrap">✓ Best</span>
+              )}
+            </div>
+            <div className="flex gap-3 text-[10px]">
+              <span className="flex items-center gap-0.5">
+                <TrendingUp className="h-2.5 w-2.5 text-green-500" />
+                <span className={scoreColor(me.emerging_score)}>{me.emerging_score}/10</span>
+              </span>
+              <span className="flex items-center gap-0.5">
+                <TrendingDown className="h-2.5 w-2.5 text-red-400" />
+                <span className={scoreColor(me.diminishing_score)}>{me.diminishing_score}/10</span>
+              </span>
+            </div>
+            {me.strengths && <p className="text-[9px] text-muted-foreground leading-tight">✓ {me.strengths}</p>}
+            {me.weaknesses && <p className="text-[9px] text-red-500 leading-tight">✗ {me.weaknesses}</p>}
+            {(me.flagged_skills?.length ?? 0) > 0 && (
+              <p className="text-[9px] text-amber-600">{me.flagged_skills.length} issue{me.flagged_skills.length !== 1 ? "s" : ""} flagged</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {evaluation.recommended_model_rationale && (
+        <p className="text-[10px] text-muted-foreground italic">
+          Recommended:{" "}
+          <span className="font-medium not-italic text-violet-700">
+            {(evaluation.model_evaluations ?? []).find(m => m.model_id === evaluation.recommended_model)?.model_label ?? evaluation.recommended_model}
+          </span>{" "}
+          — {evaluation.recommended_model_rationale}
+        </p>
+      )}
+
+      {(consensusEmerging.length > 0 || consensusDiminishing.length > 0) && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold text-muted-foreground">Consensus Skills (2+ models agree)</p>
+          <div className="flex flex-wrap gap-1">
+            {consensusEmerging.map((c, i) => (
+              <span key={`e${i}`} className={`text-[9px] px-1.5 py-0.5 rounded-full border ${recStyle(c.recommendation)}`}>
+                ↑ {c.skill_name}
+              </span>
+            ))}
+            {consensusDiminishing.map((c, i) => (
+              <span key={`d${i}`} className={`text-[9px] px-1.5 py-0.5 rounded-full border ${recStyle(c.recommendation)}`}>
+                ↓ {c.skill_name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {allFlags.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[10px] font-semibold text-muted-foreground">Flagged Issues</p>
+          <div className="space-y-0.5">
+            {allFlags.map((f, i) => (
+              <div key={i} className="text-[9px] flex items-start gap-1 text-amber-700">
+                <span className="shrink-0 font-medium">[{f.model_label}]</span>
+                <span className="font-medium">{f.skill_name}</span>
+                <span className="text-muted-foreground">— {f.note}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Multi-model result grid ───────────────────────────────────────────────────
 
 function MultiModelResultGrid({
@@ -346,11 +493,17 @@ function MultiModelResultGrid({
   onDelete,
   onAddToReport,
   addingToReport,
+  onEvaluate,
+  evaluating,
+  evaluation,
 }: {
   record: MultiModelRecord;
   onDelete?: () => void;
   onAddToReport?: (run: ModelRun, modelId: ModelId) => void;
   addingToReport?: boolean;
+  onEvaluate?: () => void;
+  evaluating?: boolean;
+  evaluation?: EvaluationResult;
 }) {
   const runEntries = Object.entries(record.runs) as [ModelId, ModelRun][];
   const [referenceModelId, setReferenceModelId] = useState<ModelId>(
@@ -384,6 +537,18 @@ function MultiModelResultGrid({
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
+            {onEvaluate && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px] gap-1.5 border-violet-300 text-violet-700 hover:bg-violet-50"
+                onClick={onEvaluate}
+                disabled={evaluating}
+              >
+                {evaluating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                {evaluating ? "Evaluating…" : evaluation ? "Re-evaluate" : "Evaluate with Claude"}
+              </Button>
+            )}
             {onAddToReport && refRun && (
               <Button
                 size="sm"
@@ -428,6 +593,7 @@ function MultiModelResultGrid({
             />
           ))}
         </div>
+        {evaluation && <EvaluationPanel evaluation={evaluation} />}
       </CardContent>
     </Card>
   );
@@ -492,12 +658,6 @@ const LS_KEY             = "rolescope_results";
 const LS_REPORT_KEY      = "rolescope_report_entries";
 
 const SkillsMapper = () => {
-  const location = useLocation();
-  const incomingProfile = (location.state as { profile?: JobProfile } | null)?.profile;
-
-  const [profiles, setProfiles]               = useState<JobProfile[]>([]);
-  const [selectedId, setSelectedId]           = useState<string>("");
-  const [selectedProfile, setSelectedProfile] = useState<JobProfile | null>(null);
   const [jdText, setJdText]                   = useState("");
   const [tasksText, setTasksText]             = useState("");
   const [orgName, setOrgName]                 = useState("");
@@ -513,6 +673,8 @@ const SkillsMapper = () => {
     try { return JSON.parse(localStorage.getItem(LS_REPORT_KEY) || "[]"); } catch { return []; }
   });
   const [confirmEntry, setConfirmEntry]       = useState<{ record: MultiModelRecord; run: ModelRun; modelId: ModelId } | null>(null);
+  const [evaluations, setEvaluations]         = useState<Record<string, EvaluationResult>>({});
+  const [evaluatingId, setEvaluatingId]       = useState<string | null>(null);
 
   // ── Storage helpers ─────────────────────────────────────────────────────────
 
@@ -565,35 +727,8 @@ const SkillsMapper = () => {
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    fetch("/api/job-profiles")
-      .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setProfiles(data); })
-      .catch(() => {});
     loadSaved();
   }, []);
-
-  useEffect(() => {
-    if (incomingProfile) {
-      applyProfile(incomingProfile);
-      window.history.replaceState({}, "");
-    }
-  }, []);
-
-  // ── Profile ─────────────────────────────────────────────────────────────────
-
-  const applyProfile = (p: JobProfile) => {
-    setSelectedId(String(p.id));
-    setSelectedProfile(p);
-    setJdText(profileToJdText(p));
-    setTasksText(profileToTasks(p).join("\n"));
-    setDepartment(p.subFamily || "");
-    setLiveResult(null);
-  };
-
-  const handleProfileSelect = (val: string) => {
-    const p = profiles.find(x => String(x.id) === val);
-    if (p) applyProfile(p);
-  };
 
   // ── Run ─────────────────────────────────────────────────────────────────────
 
@@ -614,15 +749,16 @@ const SkillsMapper = () => {
           tasks,
           orgName:    orgName.trim(),
           industry:   industry.trim(),
-          jobTitle:   selectedProfile?.title || "",
+          jobTitle:   "",
           department: department.trim(),
-          profile:    selectedProfile,
+          profile:    null,
           models:     selectedModels,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed.");
       const record = normalizeRecord(data);
+      record.jdText = jdText.trim();
       setLiveResult(record);
       saveToLocal(record);
       toast.success(`Analysis complete — ${selectedModels.length} model${selectedModels.length !== 1 ? "s" : ""} compared.`);
@@ -631,6 +767,43 @@ const SkillsMapper = () => {
       toast.error(err.message || "Analysis failed.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Evaluate ────────────────────────────────────────────────────────────────
+
+  const handleEvaluate = async (record: MultiModelRecord) => {
+    const resolvedJd = record.jdText || record.profile?.purpose || "";
+    if (!resolvedJd.trim()) { toast.error("No job description available to evaluate against."); return; }
+    const runEntries = Object.entries(record.runs);
+    if (runEntries.length < 2) { toast.error("Need at least 2 model outputs to evaluate."); return; }
+
+    setEvaluatingId(record.profileId);
+    try {
+      const tasksList = record.profile?.tasks
+        ? record.profile.tasks.map((t, i) => `${i + 1}. ${t.name}`).join("\n")
+        : "";
+      const res = await fetch("/api/evaluate-skills-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runs:       record.runs,
+          jdText:     resolvedJd,
+          tasks:      tasksList,
+          orgName:    record.orgName,
+          industry:   record.industry,
+          department: record.department,
+          jobTitle:   record.profile?.title || "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Evaluation failed.");
+      setEvaluations(prev => ({ ...prev, [record.profileId]: data }));
+      toast.success("Evaluation complete.");
+    } catch (err: any) {
+      toast.error(err.message || "Evaluation failed.");
+    } finally {
+      setEvaluatingId(null);
     }
   };
 
@@ -801,25 +974,8 @@ const SkillsMapper = () => {
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">Input</CardTitle>
-                <CardDescription>Select a profile to auto-fill, or enter context manually.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {profiles.length > 0 && (
-                  <div className="space-y-1.5">
-                    <Label>Load from Job Profile</Label>
-                    <Select value={selectedId} onValueChange={handleProfileSelect}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Choose a job profile…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {profiles.map(p => (
-                          <SelectItem key={p.id} value={String(p.id)}>{p.title}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
                 <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="org">Organisation</Label>
@@ -880,6 +1036,9 @@ const SkillsMapper = () => {
                 record={liveResult}
                 onAddToReport={(run, modelId) => setConfirmEntry({ record: liveResult, run, modelId })}
                 addingToReport={addingToReport === liveResult.profileId}
+                onEvaluate={() => handleEvaluate(liveResult)}
+                evaluating={evaluatingId === liveResult.profileId}
+                evaluation={evaluations[liveResult.profileId]}
               />
             )}
           </TabsContent>
@@ -912,6 +1071,9 @@ const SkillsMapper = () => {
                       onDelete={() => handleDelete(r.profileId)}
                       onAddToReport={(run, modelId) => setConfirmEntry({ record: r, run, modelId })}
                       addingToReport={addingToReport === r.profileId}
+                      onEvaluate={Object.keys(r.runs).length >= 2 ? () => handleEvaluate(r) : undefined}
+                      evaluating={evaluatingId === r.profileId}
+                      evaluation={evaluations[r.profileId]}
                     />
                   ))}
                 </div>

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
@@ -9,8 +10,8 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import { buildSkillsPipelinePrompt } from "./src/prompts/skills-pipeline.js";
 import { buildDiminishingSkillsPrompt } from "./src/prompts/diminishing-skills.js";
+import { buildSkillsEvaluatorPrompt } from "./src/prompts/skills-evaluator.js";
 import { callModel, ModelId } from "./src/llm/clients.js";
-import "dotenv/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Excel file lives in data/ inside the project so it deploys to Vercel
@@ -944,6 +945,56 @@ app.post("/api/full-analysis-multi", async (req, res) => {
     res.status(allOk ? 200 : 207).json(record);
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Multi-model analysis failed." });
+  }
+});
+
+// ── Multi-model Skills Evaluation (Claude as evaluator) ──────────────────────
+
+const EVALUATOR_MODEL_LABELS: Record<string, string> = {
+  "azure-gpt-4o":      "GPT-4o",
+  "azure-gpt-5.3":     "GPT-5.3",
+  "azure-oss-120b":    "OSS 120B",
+  "claude-sonnet-4-6": "Claude Sonnet",
+};
+
+app.post("/api/evaluate-skills-multi", async (req, res) => {
+  const { runs, jdText, tasks, orgName, industry, department, jobTitle } = req.body;
+  if (!runs || typeof runs !== "object" || !Object.keys(runs).length)
+    return res.status(400).json({ error: "runs is required and must be a non-empty object." });
+  if (!jdText?.trim())
+    return res.status(400).json({ error: "jdText is required." });
+
+  const modelOutputs = Object.entries(runs).map(([modelId, run]: [string, any]) => ({
+    modelId,
+    modelLabel: EVALUATOR_MODEL_LABELS[modelId] ?? modelId,
+    emergingSkills:    run?.emerging?.emerging_skills   ?? [],
+    diminishingSkills: run?.diminishing?.diminishing_skills ?? run?.diminishing?.skills ?? [],
+  }));
+
+  const tasksList = Array.isArray(tasks)
+    ? tasks.map((t: string, i: number) => `${i + 1}. ${t}`).join("\n")
+    : typeof tasks === "string" ? tasks : "";
+
+  const input = {
+    orgName:          orgName?.trim()   || "",
+    industry:         industry?.trim()  || "",
+    job_profile_name: jobTitle?.trim()  || "",
+    department:       department?.trim() || "",
+    jdText: jdText.trim(),
+    tasksList,
+    modelOutputs,
+  };
+
+  try {
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      messages: [{ role: "user", content: buildSkillsEvaluatorPrompt(input) }],
+    });
+    const raw = message.content[0].type === "text" ? message.content[0].text : "";
+    res.json(parseClaudeJson(raw));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Evaluation failed." });
   }
 });
 
