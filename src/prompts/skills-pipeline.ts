@@ -138,5 +138,19 @@ not generic industry commentary
 
 capability, merge them into the single most precise term and drop the redundant one
 
+- Do NOT list skills that are already stable, foundational responsibilities of this
+
+role. An emerging skill must represent a genuine NEW or SHIFTING capability demand —
+
+not something the role has always required (e.g., "launch coordination" for a PMM is
+
+a core duty, not an emerging skill)
+
+- Skill names must be learnable, demonstrable capabilities — NOT work activities,
+
+deliverables, or job outputs. Wrong: "Category Narrative Development", "Launch
+
+Orchestration". Right: "Marketing Mix Modeling", "Prompt Engineering for GTM"
+
 - Return only valid JSON after the </thinking> block, no additional text`;
 }
