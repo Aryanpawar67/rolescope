@@ -70,17 +70,15 @@ this role in the ${input.industry || "relevant"} industry?
 
 adjacent forms? (e.g., SQL → dbt + analytical engineering)
 
-- What skills are consistently appearing in new job postings for this title
+- What skills are implicitly required by the tasks listed but not yet formally
 
-but are absent or underweighted in this profile?
+captured in this profile? (Stay within the JD — do not draw from general market
+
+trends not referenced here.)
 
 - What tasks in this profile are changing due to AI/automation — and what new
 
 human skills does that shift create demand for?
-
-- What skills are implicitly required by the listed tasks but not yet formally
-
-captured in the profile?
 
 ##Output a JSON object with this exact structure:
 
@@ -135,6 +133,10 @@ evolving into a meaningfully different form
 - Keep reasoning specific to ${input.job_profile_name} in ${input.industry || "this industry"},
 
 not generic industry commentary
+
+- Before finalising, check for overlap: if two skills cover substantially the same
+
+capability, merge them into the single most precise term and drop the redundant one
 
 - Return only valid JSON after the </thinking> block, no additional text`;
 }
