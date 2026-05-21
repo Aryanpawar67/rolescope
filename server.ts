@@ -661,7 +661,7 @@ app.delete("/api/stored-results/:profileId", (req, res) => {
 // ── Shared input builder ──────────────────────────────────────────────────────
 
 function buildPipelineInput(body: any) {
-  const { jdText, tasks, orgName, industry, jobTitle, department, profile } = body;
+  const { jdText, tasks, orgName, industry, job_profile_name, jobTitle, department, profile } = body;
   const profKnowledge: string[] = profile?.professionalKnowledge ?? [];
   const profileTasks: Array<{ name: string; proficiency: string }> = profile?.tasks ?? [];
   const resolvedTasks = profileTasks.length
@@ -670,7 +670,7 @@ function buildPipelineInput(body: any) {
   return {
     orgName: orgName?.trim() || "",
     industry: industry?.trim() || "",
-    job_profile_name: jobTitle?.trim() || profile?.title || "",
+    job_profile_name: (job_profile_name ?? jobTitle)?.trim() || profile?.title || "",
     department: department?.trim() || profile?.subFamily || "",
     jdText: jdText.trim(),
     skillsList: deriveSkillsList(profKnowledge),
@@ -687,12 +687,24 @@ class ClaudeJsonParseError extends Error {
 }
 
 function parseClaudeJson(raw: string): any {
-  const stripped = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
+  // 1. Strip closed thinking blocks only — never use a greedy fallback that wipes the whole response
+  let stripped = raw
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .trim();
+
+  // 2. Strip any markdown code fences (```json ... ``` or ``` ... ```)
+  stripped = stripped.replace(/^```(?:json|javascript)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
+
+  // 3. Find first { and last } to extract the JSON object cleanly
   const firstBrace = stripped.indexOf("{");
+  const lastBrace  = stripped.lastIndexOf("}");
   if (firstBrace === -1) {
+    console.error("[parseClaudeJson] no { found, stripped:", stripped.slice(0, 300));
     throw new ClaudeJsonParseError("No JSON object found in response", stripped.length);
   }
-  const candidate = stripped.slice(firstBrace);
+  const candidate = lastBrace > firstBrace
+    ? stripped.slice(firstBrace, lastBrace + 1)
+    : stripped.slice(firstBrace);
 
   try {
     return JSON.parse(candidate);
@@ -702,6 +714,8 @@ function parseClaudeJson(raw: string): any {
   if (salvaged) return salvaged;
 
   console.error("[parseClaudeJson] parse + salvage failed, raw length:", candidate.length);
+  console.error("[parseClaudeJson] candidate start:", candidate.slice(0, 400));
+  console.error("[parseClaudeJson] candidate end:  ", candidate.slice(-200));
   throw new ClaudeJsonParseError("Response was not valid JSON and could not be salvaged", candidate.length);
 }
 
@@ -958,7 +972,7 @@ const EVALUATOR_MODEL_LABELS: Record<string, string> = {
 };
 
 app.post("/api/evaluate-skills-multi", async (req, res) => {
-  const { runs, jdText, tasks, orgName, industry, department, jobTitle } = req.body;
+  const { runs, jdText, tasks, orgName, industry, department, job_profile_name, jobTitle } = req.body;
   if (!runs || typeof runs !== "object" || !Object.keys(runs).length)
     return res.status(400).json({ error: "runs is required and must be a non-empty object." });
   if (!jdText?.trim())
@@ -978,7 +992,7 @@ app.post("/api/evaluate-skills-multi", async (req, res) => {
   const input = {
     orgName:          orgName?.trim()   || "",
     industry:         industry?.trim()  || "",
-    job_profile_name: jobTitle?.trim()  || "",
+    job_profile_name: (job_profile_name ?? jobTitle)?.trim() || "",
     department:       department?.trim() || "",
     jdText: jdText.trim(),
     tasksList,
@@ -986,14 +1000,18 @@ app.post("/api/evaluate-skills-multi", async (req, res) => {
   };
 
   try {
+    const prompt = buildSkillsEvaluatorPrompt(input);
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 8192,
-      messages: [{ role: "user", content: buildSkillsEvaluatorPrompt(input) }],
+      max_tokens: 16000,
+      system: prompt.system,
+      messages: [{ role: "user", content: prompt.user }],
     });
     const raw = message.content[0].type === "text" ? message.content[0].text : "";
+    console.log("[evaluate] raw length:", raw.length, "| first 200:", raw.slice(0, 200));
     res.json(parseClaudeJson(raw));
   } catch (err: any) {
+    console.error("[evaluate] error:", err.message, err.stack?.slice(0, 300));
     res.status(500).json({ error: err.message || "Evaluation failed." });
   }
 });

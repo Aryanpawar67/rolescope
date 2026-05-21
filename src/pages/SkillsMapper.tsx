@@ -84,7 +84,9 @@ interface MultiModelRecord {
   orgName: string;
   industry: string;
   department: string;
+  job_profile_name?: string;
   jdText?: string;
+  tasks?: string[];
   runs: Partial<Record<ModelId, ModelRun>>;
   warnings?: string[];
 }
@@ -669,6 +671,7 @@ const SkillsMapper = () => {
   const [orgName, setOrgName]                 = useState("");
   const [industry, setIndustry]               = useState("");
   const [department, setDepartment]           = useState("");
+  const [jobProfileName, setJobProfileName]   = useState("");
   const [selectedModels, setSelectedModels]   = useState<ModelId[]>([...DEFAULT_MULTI_MODELS]);
   const [loading, setLoading]                 = useState(false);
   const [liveResult, setLiveResult]           = useState<MultiModelRecord | null>(null);
@@ -755,7 +758,7 @@ const SkillsMapper = () => {
           tasks,
           orgName:    orgName.trim(),
           industry:   industry.trim(),
-          jobTitle:   "",
+          job_profile_name: jobProfileName.trim(),
           department: department.trim(),
           profile:    null,
           models:     selectedModels,
@@ -764,7 +767,9 @@ const SkillsMapper = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed.");
       const record = normalizeRecord(data);
-      record.jdText = jdText.trim();
+      record.jdText   = jdText.trim();
+      record.tasks    = tasks;
+      record.job_profile_name = jobProfileName.trim();
       setLiveResult(record);
       saveToLocal(record);
       toast.success(`Analysis complete — ${selectedModels.length} model${selectedModels.length !== 1 ? "s" : ""} compared.`);
@@ -786,9 +791,9 @@ const SkillsMapper = () => {
 
     setEvaluatingId(record.profileId);
     try {
-      const tasksList = record.profile?.tasks
-        ? record.profile.tasks.map((t, i) => `${i + 1}. ${t.name}`).join("\n")
-        : "";
+      const tasksList = record.tasks?.length
+        ? record.tasks
+        : (record.profile?.tasks?.map((t) => t.name) ?? []);
       const res = await fetch("/api/evaluate-skills-multi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -799,7 +804,7 @@ const SkillsMapper = () => {
           orgName:    record.orgName,
           industry:   record.industry,
           department: record.department,
-          jobTitle:   record.profile?.title || "",
+          job_profile_name: record.job_profile_name || record.profile?.title || "",
         }),
       });
       const data = await res.json();
@@ -982,7 +987,7 @@ const SkillsMapper = () => {
                 <CardTitle className="text-lg">Input</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-4 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="org">Organisation</Label>
                     <Input id="org" placeholder="e.g. Acme Bank" value={orgName} onChange={e => setOrgName(e.target.value)} />
@@ -994,6 +999,10 @@ const SkillsMapper = () => {
                   <div className="space-y-1.5">
                     <Label htmlFor="dept">Department</Label>
                     <Input id="dept" placeholder="e.g. IT and Digitalization" value={department} onChange={e => setDepartment(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="job_profile_name">Job Profile Name</Label>
+                    <Input id="job_profile_name" placeholder="e.g. Backend Engineer" value={jobProfileName} onChange={e => setJobProfileName(e.target.value)} />
                   </div>
                 </div>
 

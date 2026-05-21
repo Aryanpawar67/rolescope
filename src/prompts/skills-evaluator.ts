@@ -15,7 +15,12 @@ export interface SkillsEvaluatorInput {
   modelOutputs: SkillsEvaluatorModelOutput[];
 }
 
-export function buildSkillsEvaluatorPrompt(input: SkillsEvaluatorInput): string {
+export interface SkillsEvaluatorPrompt {
+  system: string;
+  user: string;
+}
+
+export function buildSkillsEvaluatorPrompt(input: SkillsEvaluatorInput): SkillsEvaluatorPrompt {
   const today = new Date().toISOString().split("T")[0];
 
   const modelsSection = input.modelOutputs
@@ -39,24 +44,18 @@ ${diminishing}`;
     })
     .join("\n\n---\n\n");
 
-  return `SYSTEM:
+  const system = `You are a senior workforce intelligence evaluator. Your role is to critically assess outputs from multiple AI models that analyzed a job profile for emerging and diminishing skills.
 
-You are a senior workforce intelligence evaluator. Your role is to critically assess outputs
-from multiple AI models that analyzed a job profile for emerging and diminishing skills.
-
-You do NOT generate new skills. You evaluate, compare, and score the existing model outputs
-against the source job description and task list.
+You do NOT generate new skills. You evaluate, compare, and score the existing model outputs against the source job description and task list.
 
 Evaluation criteria:
 - Groundedness: Is each skill explicitly or clearly implicitly supported by the JD?
 - Role-specificity: Is it specific to THIS role/level, not a generic employability skill?
 - Skill quality: Is it a genuine learnable, demonstrable skill — not a vague knowledge area, competency, or attribute?
 - Signal strength for diminishing skills: Is there a genuine decline driver (AI automation, tool supersession, commoditization, legacy phase-out) relevant to THIS industry?
-- Appropriate scope: Not too broad (e.g., "Digital Literacy"), not too narrow (e.g., a single keyboard shortcut).
+- Appropriate scope: Not too broad (e.g., "Digital Literacy"), not too narrow (e.g., a single keyboard shortcut).`;
 
-USER:
-
-Today's date: ${today}
+  const user = `Today's date: ${today}
 
 ## Job Profile Context
 
@@ -83,20 +82,7 @@ ${modelsSection}
 
 ## Your Task
 
-Step 1 — Reason first (inside a <thinking> block, do not skip):
-
-For each model:
-- Which emerging skills are clearly grounded in the JD vs speculative, generic, or not specific to this role?
-- Which diminishing skills have genuine, industry-specific decline signals vs skills that are stable, thriving, or irrelevant to this context?
-- Are any labelled "skills" actually vague knowledge areas, broad competencies, or non-learnable attributes?
-- What is the overall precision and usefulness of this model's output for an HR analyst?
-
-Across all models:
-- Which skills appear in 2 or more models under the same or clearly equivalent name?
-- Which skills are unique to one model and appear questionable or unsupported?
-- Which model produces the most accurate, role-specific, and JD-grounded output?
-
-## Output a JSON object with this exact structure:
+Evaluate each model's output directly. Output a JSON object with this exact structure:
 
 {
   "job_profile_name": "string",
@@ -148,5 +134,7 @@ Rules:
   (e.g., "Prompt Engineering" and "LLM Prompt Design" are equivalent — pick the cleaner name)
 - Consensus agreed_by must be an array of model_id strings
 - recommendation "include" = strong signal, well-grounded; "review" = uncertain or needs human check; "exclude" = likely noise
-- Return only valid JSON after the </thinking> block, no additional text`;
+- Return only valid JSON, no markdown fences, no additional text`;
+
+  return { system, user };
 }
