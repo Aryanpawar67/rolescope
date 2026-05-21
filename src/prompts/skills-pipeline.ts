@@ -118,7 +118,15 @@ framework migration, cloud-native transition)",
 
 Rules:
 
-- Return all skills that are genuinely emerging for this role based solely on
+- Return between 5–8 skills maximum. Quality and JD-grounding over quantity —
+
+a tighter, high-confidence list is more actionable than an exhaustive one.
+
+If you have more than 8 candidates, keep only the most role-specific and
+
+best-grounded ones
+
+- Return only skills genuinely emerging for this role based solely on
 
 the provided job description — do not hallucinate or add generic market skills
 
@@ -128,7 +136,15 @@ not grounded in the JD
 
 - Do not list skills already dominant in the profile unless they are
 
-evolving into a meaningfully different form
+evolving into a meaningfully different form. If a tool or technology is
+
+explicitly named in the JD as a current core requirement, do NOT list it as
+
+emerging unless you can identify a concrete, specific shift in HOW it is used —
+
+not merely an increase in scale or scope (e.g., "more EKS" is not an emerging
+
+skill; "EKS-native multi-tenancy via Karpenter replacing manual node pools" would be)
 
 - Keep reasoning specific to ${input.job_profile_name} in ${input.industry || "this industry"},
 
@@ -150,7 +166,15 @@ a core duty, not an emerging skill)
 
 deliverables, or job outputs. Wrong: "Category Narrative Development", "Launch
 
-Orchestration". Right: "Marketing Mix Modeling", "Prompt Engineering for GTM"
+Orchestration". Right: "Marketing Mix Modeling", "Prompt Engineering for GTM".
+
+Explicitly exclude: leadership attributes, cultural influence behaviors, and
+
+organisational capabilities (e.g., "Change Leadership", "Reliability Culture
+
+Influence", "Team Enablement") — these cannot be assessed as discrete workforce
+
+skills in a taxonomy context
 
 - Return only valid JSON after the </thinking> block, no additional text`;
 }
