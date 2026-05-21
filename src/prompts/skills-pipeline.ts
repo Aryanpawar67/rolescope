@@ -162,6 +162,12 @@ not something the role has always required (e.g., "launch coordination" for a PM
 
 a core duty, not an emerging skill)
 
+- skill_name must be a concise, standalone label of 1–4 words maximum.
+
+  Wrong: "AI-Assisted Content Operations and Brand Governance"
+
+  Right: "AI Content Governance"
+
 - Skill names must be learnable, demonstrable capabilities — NOT work activities,
 
 deliverables, or job outputs. Wrong: "Category Narrative Development", "Launch
@@ -175,6 +181,24 @@ organisational capabilities (e.g., "Change Leadership", "Reliability Culture
 Influence", "Team Enablement") — these cannot be assessed as discrete workforce
 
 skills in a taxonomy context
+
+- Each skill must be tied to a concrete, named technology shift, market signal,
+
+or AI adoption pattern visible in this JD — not a general professional competency
+
+that any practitioner in this field would already be expected to have.
+
+  Wrong (generic competency): "SME Interviewing", "Content Repurposing Systems",
+
+  "Product Marketing Narrative Alignment" — these are standard practice for any
+
+  B2B marketer and carry no emergence signal
+
+  Right (emergence signal present): "LLM-Assisted Persona Research" (tied to AI
+
+  tooling shift in research workflows), "Programmatic Content Distribution" (tied
+
+  to a specific channel automation trend named in the JD)
 
 - Return only valid JSON after the </thinking> block, no additional text`;
 }
